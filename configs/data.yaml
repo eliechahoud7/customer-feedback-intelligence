@@ -13,3 +13,7 @@ split:
 output:
   processed_dir: data/processed
   splits_dir: data/splits
+
+sft:
+  # Built from splits_dir by src.data.build_sft_dataset; not committed to Git.
+  output_dir: data/processed/sft

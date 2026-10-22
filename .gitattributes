@@ -1,0 +1,2 @@
+# Keep data files byte-identical on every OS so recorded checksums match.
+*.jsonl text eol=lf

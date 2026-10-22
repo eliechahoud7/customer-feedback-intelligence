@@ -4,12 +4,15 @@ Fine-tuning a small open LLM to understand customer feedback at scale.
 
 ## Objective
 
-Customer feedback (reviews, support tickets, survey answers) arrives as unstructured text. This project fine-tunes **Qwen2.5-3B-Instruct** with **QLoRA** to turn each piece of feedback into structured, actionable labels (for example sentiment, topic/category, and urgency), and exposes the model through a simple **Streamlit** interface.
+Customer feedback arrives as unstructured text, and one review often praises one part of a product while criticizing another. This project performs **aspect-based sentiment analysis (ABSA)**: it fine-tunes **Qwen2.5-3B-Instruct** with **QLoRA** to find the aspects a laptop review mentions and the sentiment toward each one, and exposes the model through a **Streamlit** interface.
+
+> "I charge it at night and skip taking the cord with me because of the good battery life."
+> → `cord`: neutral, `battery life`: positive
 
 Goals:
 
-- Beat a zero-shot baseline of the same model on held-out data.
-- Report **macro F1** as the primary metric (robust to class imbalance), along with per-class precision/recall/F1, accuracy, and a confusion matrix.
+- Beat a zero-shot baseline of the same model, with the same prompt, on held-out data.
+- Report **macro F1** over the four sentiment labels, alongside aspect extraction and joint aspect + sentiment F1.
 - Keep training feasible on a single consumer GPU via 4-bit quantization + LoRA adapters.
 
 ## Tech stack
@@ -43,14 +46,14 @@ customer-feedback-intelligence/
 └── README.md
 ```
 
-Data folders and model artifacts are git-ignored; only the code and configs are versioned.
+Code, configs and the prepared splits in `data/splits/` are versioned. `data/raw/`, `data/processed/` (including the generated SFT files) and model artifacts are git-ignored and regenerated from the code.
 
 ## Development stages
 
 1. **Project setup** ✅ — folder structure, dependencies, git hygiene.
 2. **Data acquisition & EDA** ✅ — SemEval-2014 laptops ABSA dataset; label schema and class balance inspected.
-3. **Data preprocessing** — ✅ validation, review grouping, leakage-free stratified splits; ⏳ convert examples to Qwen chat-format prompts.
-4. **Baseline evaluation** — run zero-shot (and optionally few-shot) Qwen2.5-3B-Instruct on the test split to establish a reference macro F1.
+3. **Data preprocessing** ✅ — validation, review grouping, leakage-free stratified splits, instruction-tuning examples, answer parser.
+4. **Baseline evaluation** — run zero-shot Qwen2.5-3B-Instruct with the shared prompt to establish reference scores.
 5. **QLoRA fine-tuning** — 4-bit NF4 base model + LoRA adapters trained with TRL's `SFTTrainer`; hyperparameters in `configs/`.
 6. **Evaluation & error analysis** — macro F1, per-class metrics, confusion matrix, invalid-output rate; compare against the baseline.
 7. **Streamlit app** — enter or upload feedback, get predicted labels, view batch summaries.
@@ -89,6 +92,57 @@ Record format:
              {"term": "battery life", "start": 74, "end": 86, "sentiment": "positive"}],
  "source_split": "train"}
 ```
+
+## Instruction-tuning (SFT) data
+
+```bash
+python -m src.data.build_sft_dataset        # reads data/splits/, writes data/processed/sft/
+```
+
+The model performs **aspect extraction and sentiment classification jointly**: given only the review, it answers with every aspect term and its sentiment. Each review becomes one example in TRL's conversational **prompt/completion** format, so the training loss covers only the answer:
+
+```json
+{"review_id": "lap-76ef38e511", "split": "test", "prompt_version": "v1",
+ "prompt": [{"role": "system", "content": "You are an aspect-based sentiment analysis system for laptop reviews. ..."},
+            {"role": "user", "content": "Review: I charge it at night and skip taking the cord with me because of the good battery life."}],
+ "completion": [{"role": "assistant", "content": "[{\"aspect\": \"cord\", \"sentiment\": \"neutral\"}, {\"aspect\": \"battery life\", \"sentiment\": \"positive\"}]"}]}
+```
+
+- **Prompt** (`src/data/prompts.py`): one system prompt defining the four labels and the rules. Terms are copied verbatim from the review and listed in text order, repeated terms are listed once per occurrence, and the reply is a JSON array only (`[]` if there are no aspects). Training, the baseline, evaluation and the app all import it from this module. Any change bumps `PROMPT_VERSION`.
+- **Answer**: a JSON array of `{"aspect", "sentiment"}` objects. JSON escapes terms that contain quotes, such as `"sales" team`. The answer has no character offsets; evaluation pairs predictions with gold aspects by term and order.
+- **Class balance**: training uses the natural label distribution, including the rare `conflict` class (32 training aspects). Oversampling will only be considered if validation results justify it, and then only within train.
+
+### Answer parsing (`src/evaluation/parsing.py`)
+
+The parser never repairs or silently drops a prediction:
+
+| Problem | How it is reported |
+|---------|--------------------|
+| Not valid JSON, extra text around the array | `status="invalid_json"`, no predictions |
+| Markdown code fence | Rejected by default; with `allow_code_fence=True` accepted and flagged `code_fence=True` |
+| Not an array, unreadable items, extra keys | `status="malformed"`, unreadable items counted in `malformed_items` |
+| Unknown sentiment label (e.g. `"Positive"`, `"mixed"`) | Item kept with `label_valid=False`, so it counts as wrong |
+| Aspect not in the review, or predicted more often than it occurs | Item kept with `invented=True` |
+| Aspect found only by ignoring case | Item kept, flagged `exact_case=False` |
+
+Predicted terms are grounded in the review text. Repeated terms map to successive occurrences, whole-word matches are preferred ("weight" over "light**weight**"), and longer terms are matched first ("mic" vs "mic jack").
+
+### Leakage prevention and integrity checks
+
+`build_sft_dataset.py` stops with an error if any check fails:
+
+- **The splits are the source of truth.** They are read, never re-split or modified. Each SFT file has exactly the same review IDs, in the same order, as its source split.
+- **Disjoint splits.** No review ID or review text (ignoring case and spacing) appears in more than one split.
+- **Labeled data only.** Every source review must come from the labeled source split with one of the four labels and valid offsets. The unlabeled original test split is never read.
+- **Round trip.** Every reference answer is parsed back with the evaluation parser and must reproduce the original terms and labels exactly, all found verbatim in the review.
+- **Checksums.** `data/processed/sft/manifest.json` records SHA-256 checksums of the source splits and generated files, the prompt version and a hash of the system prompt. `verify_manifest()` fails if any of them changed since the build. `.gitattributes` keeps `.jsonl` files LF-only so checksums match across operating systems.
+- **Train-only changes.** Validation and test are never used for training, augmentation or oversampling. Prompt and hyperparameter choices are made on validation, and test is scored once at the end.
+
+### Known limitations
+
+- **Every labeled review has at least one aspect**, because the source dataset excludes aspect-free sentences. The model never sees a `[]` answer during training and may invent aspects for reviews without any. Evaluation tracks this through the invented-aspect rate.
+- **Ambiguous occurrences.** Because answers carry terms, not offsets, one training aspect ("keyboard", first used as a verb in the review) is grounded to a different occurrence than the annotated one. The manifest records this count (`aspects_grounded_to_other_occurrence`).
+- **`conflict` is rare** (6 test aspects), so its F1 is noisy. Macro F1 will also be reported without it.
 
 ## Setup
 
