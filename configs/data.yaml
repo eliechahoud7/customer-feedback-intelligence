@@ -1,0 +1,15 @@
+dataset:
+  name: tomaarsen/setfit-absa-semeval-laptops
+  # Only this split carries sentiment labels.
+  labeled_split: train
+  # Aspect spans only, every sentiment label is empty. Never used as ground truth.
+  unlabeled_split: test
+
+split:
+  seed: 42
+  validation_size: 0.15
+  test_size: 0.15
+
+output:
+  processed_dir: data/processed
+  splits_dir: data/splits
