@@ -140,6 +140,13 @@ Predicted terms are grounded in the review text. Repeated terms map to successiv
 
 ## QLoRA fine-tuning (Colab T4)
 
+The notebook [`notebooks/colab_train_eval.ipynb`](notebooks/colab_train_eval.ipynb) runs the whole workflow below on a Colab T4: setup, the version check, tests, data checks, a 5-step test run, training, the baseline, checkpoint selection and the final test.
+- Outputs are kept on Google Drive.
+- The private repo is cloned with a `GITHUB_TOKEN` Colab secret.
+- Full training and the final test evaluation are off by default.
+
+The same steps as commands:
+
 ```bash
 git clone https://github.com/eliechahoud7/customer-feedback-intelligence.git && cd customer-feedback-intelligence
 pip install -r requirements.txt               # Colab's preinstalled CUDA PyTorch already satisfies torch
