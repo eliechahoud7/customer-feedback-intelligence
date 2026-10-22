@@ -283,6 +283,71 @@ def test_compatibility_checks_run_before_model_loading():
     assert body.index("check_transformers_version(") < model_load
 
 
+# --- Regression: TRL casts QLoRA adapters to bf16, breaking the fp16 GradScaler ------------
+
+
+class FakeTensor:
+    def __init__(self, dtype):
+        self.dtype = dtype
+
+    def to(self, dtype):
+        return FakeTensor(dtype)
+
+
+class FakeParameter:
+    def __init__(self, dtype, requires_grad):
+        self.data, self.requires_grad = FakeTensor(dtype), requires_grad
+
+    @property
+    def dtype(self):
+        return self.data.dtype
+
+
+def qlora_parameters():
+    """Like the Colab model after SFTTrainer.__init__: LoRA weights cast to bf16 by TRL."""
+    return [
+        ("base.layers.0.self_attn.q_proj.base_layer.weight", FakeParameter("uint8", False)),  # 4-bit
+        ("base.layers.0.input_layernorm.weight", FakeParameter("float32", False)),
+        ("base.layers.0.self_attn.q_proj.lora_A.default.weight", FakeParameter("bfloat16", True)),
+        ("base.layers.0.self_attn.q_proj.lora_B.default.weight", FakeParameter("bfloat16", True)),
+    ]
+
+
+def test_bf16_lora_weights_are_detected_under_fp16():
+    problems = train_module.trainable_dtype_problems(qlora_parameters(), fp16=True, float32="float32")
+    assert problems == [
+        "base.layers.0.self_attn.q_proj.lora_A.default.weight (bfloat16)",
+        "base.layers.0.self_attn.q_proj.lora_B.default.weight (bfloat16)",
+    ]
+
+
+def test_upcast_restores_float32_lora_weights_and_leaves_frozen_ones():
+    params = qlora_parameters()
+    changed = train_module.upcast_trainable_parameters(params, "float32")
+
+    assert changed == [
+        "base.layers.0.self_attn.q_proj.lora_A.default.weight",
+        "base.layers.0.self_attn.q_proj.lora_B.default.weight",
+    ]
+    assert [p.dtype for _, p in params] == ["uint8", "float32", "float32", "float32"]
+    assert train_module.trainable_dtype_problems(params, fp16=True, float32="float32") == []
+    assert train_module.trainable_dtype_counts(params) == {"float32": 2}
+
+
+def test_bf16_training_keeps_trl_bf16_adapters():
+    assert train_module.trainable_dtype_problems(qlora_parameters(), fp16=False, float32="float32") == []
+
+
+def test_fp16_upcast_runs_after_trainer_init_and_before_training():
+    body = Path(train_module.__file__).read_text(encoding="utf-8").split("def train(")[1]
+    trainer_init = body.index("trainer = SFTTrainer(")
+    upcast = body.index("upcast_trainable_parameters(trainer.model.named_parameters(), torch.float32) if args.fp16")
+    check = body.index("trainable_dtype_problems(trainer.model.named_parameters(), args.fp16, torch.float32)")
+    training = body.index("trainer.train()")
+    assert trainer_init < upcast < check < training
+    assert body.index("raise RuntimeError(", check) < training
+
+
 def test_installed_sft_config_accepts_config():
     # Runs where trl is installed (Colab); skipped locally.
     trl = pytest.importorskip("trl")

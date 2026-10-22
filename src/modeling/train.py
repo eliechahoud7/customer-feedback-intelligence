@@ -142,6 +142,42 @@ def check_transformers_version(version: str, training: dict) -> None:
         )
 
 
+def upcast_trainable_parameters(named_parameters, float32) -> list[str]:
+    """Cast trainable parameters to float32 in place; return the names changed.
+
+    TRL's SFTTrainer casts every trainable parameter of a quantized model to
+    bfloat16 (trl 1.16.0, SFTTrainer.__init__), regardless of fp16/bf16. Under
+    fp16 mixed precision the GradScaler cannot unscale bfloat16 gradients, so
+    the LoRA weights are kept in float32, the standard QLoRA fp16 setup.
+    Must run before the optimizer is created, i.e. before trainer.train().
+    """
+    changed = []
+    for name, param in named_parameters:
+        if param.requires_grad and param.dtype != float32:
+            param.data = param.data.to(float32)
+            changed.append(name)
+    return changed
+
+
+def trainable_dtype_problems(named_parameters, fp16: bool, float32) -> list[str]:
+    """Trainable parameters the fp16 GradScaler cannot unscale (must be float32)."""
+    if not fp16:
+        return []
+    return [
+        f"{name} ({param.dtype})"
+        for name, param in named_parameters
+        if param.requires_grad and param.dtype != float32
+    ]
+
+
+def trainable_dtype_counts(named_parameters) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for _, param in named_parameters:
+        if param.requires_grad:
+            counts[str(param.dtype)] = counts.get(str(param.dtype), 0) + 1
+    return counts
+
+
 def sft_config_kwargs(training: dict, max_steps: int | None = None) -> dict:
     """SFTConfig arguments; a smoke run trains max_steps steps and saves nothing."""
     kwargs = dict(training)
@@ -228,6 +264,15 @@ def train(config: dict, check_data: bool = False, max_steps: int | None = None) 
         eval_dataset=Dataset.from_list(datasets["validation"]),
         processing_class=tokenizer,
     )
+    upcast = upcast_trainable_parameters(trainer.model.named_parameters(), torch.float32) if args.fp16 else []
+    problems = trainable_dtype_problems(trainer.model.named_parameters(), args.fp16, torch.float32)
+    if problems:
+        raise RuntimeError(
+            f"fp16 training needs float32 trainable parameters for the GradScaler; found {len(problems)}: "
+            f"{problems[:5]}"
+        )
+    dtype_counts = trainable_dtype_counts(trainer.model.named_parameters())
+    print(f"trainable parameter dtypes: {dtype_counts} (upcast to float32: {len(upcast)})")
     train_result = trainer.train()
 
     output_dir = Path(args.output_dir)
@@ -243,6 +288,8 @@ def train(config: dict, check_data: bool = False, max_steps: int | None = None) 
         "prompt_version": PROMPT_VERSION,
         "sft_manifest": sft_manifest,
         "token_lengths": length_stats,
+        "trainable_parameter_dtypes": dtype_counts,
+        "trainable_parameters_upcast_to_float32": len(upcast),
         "train_metrics": train_result.metrics,
         "log_history": trainer.state.log_history,
         "libraries": library_versions(),

@@ -95,6 +95,13 @@ def test_training_refuses_to_overwrite_existing_checkpoints(notebook):
     assert cell.index("already has checkpoints") < cell.index('run("python -m src.modeling.train")')
 
 
+def test_smoke_run_checks_finite_loss_and_float32_trainable_parameters(notebook):
+    smoke = next(s for s in code_cells(notebook) if "--max-steps 5" in s)
+    assert "math.isfinite(loss)" in smoke
+    assert 'smoke["trainable_parameter_dtypes"]' in smoke
+    assert '{"torch.float32"}' in smoke
+
+
 def test_github_token_comes_from_colab_secrets_and_is_not_stored(notebook):
     text = NOTEBOOK.read_text(encoding="utf-8")
     assert not re.search(r"ghp_[A-Za-z0-9]{10,}|github_pat_[A-Za-z0-9_]{10,}|gho_[A-Za-z0-9]{10,}", text)
