@@ -39,9 +39,11 @@ customer-feedback-intelligence/
 │   ├── data/         # Loading, cleaning, label mapping, prompt formatting, splitting
 │   ├── modeling/     # Model/tokenizer loading, QLoRA config, training & inference
 │   ├── evaluation/   # Metrics (macro F1 etc.), output parsing, reports
-│   └── app/          # Streamlit application (later stage)
-├── tests/            # Unit tests for data processing, parsing, and metrics
+│   └── app/          # Streamlit app logic (service.py: config, input checks, results)
+├── tests/            # Unit tests for data processing, parsing, metrics and the app
 ├── configs/          # YAML configs for data, training hyperparameters, evaluation
+├── models/           # Local copy of the trained LoRA adapter (git-ignored)
+├── streamlit_app.py  # Streamlit user interface
 ├── requirements.txt
 └── README.md
 ```
@@ -53,10 +55,10 @@ Code, configs and the prepared splits in `data/splits/` are versioned. `data/raw
 1. **Project setup** ✅ — folder structure, dependencies, git hygiene.
 2. **Data acquisition & EDA** ✅ — SemEval-2014 laptops ABSA dataset; label schema and class balance inspected.
 3. **Data preprocessing** ✅ — validation, review grouping, leakage-free stratified splits, instruction-tuning examples, answer parser.
-4. **Baseline evaluation** — run zero-shot Qwen2.5-3B-Instruct with the shared prompt to establish reference scores.
-5. **QLoRA fine-tuning** — 4-bit NF4 base model + LoRA adapters trained with TRL's `SFTTrainer`. The script and `configs/train.yaml` are ready; no training run has been done yet.
-6. **Evaluation & error analysis** — macro F1, per-class metrics, confusion matrix, invalid-output rate; compare against the baseline.
-7. **Streamlit app** — enter or upload feedback, get predicted labels, view batch summaries.
+4. **Baseline evaluation** ✅ — zero-shot Qwen2.5-3B-Instruct with the shared prompt as the reference.
+5. **QLoRA fine-tuning** ✅ — 4-bit NF4 base model + LoRA adapters trained with TRL's `SFTTrainer` on a Colab T4.
+6. **Evaluation & error analysis** ✅ — checkpoint chosen on validation, then scored once on the held-out test split.
+7. **Streamlit app** ✅ — paste a review, get each aspect with its sentiment and a sentiment summary.
 8. **Packaging & documentation** — final results, model card, reproducibility instructions.
 
 ## Dataset preparation
@@ -215,6 +217,70 @@ As a sanity check, scoring the reference answers on validation gives 1.0 for eve
 - **Every labeled review has at least one aspect**, because the source dataset excludes aspect-free sentences. The model never sees a `[]` answer during training and may invent aspects for reviews without any. Evaluation tracks this through the invented-aspect rate.
 - **Ambiguous occurrences.** Because answers carry terms, not offsets, one training aspect ("keyboard", first used as a verb in the review) is grounded to a different occurrence than the annotated one. The manifest records this count (`aspects_grounded_to_other_occurrence`).
 - **`conflict` is rare** (6 test aspects), so its F1 is noisy. Macro F1 will also be reported without it.
+
+## Streamlit app
+
+`streamlit_app.py` analyzes one review at a time. It shows the review with each aspect highlighted, a table of aspects and sentiments, counts for the four labels, and the raw model output when the answer is not valid. It reuses `AbsaPredictor` and the shared prompt and parser; `src/app/service.py` holds the rest of the logic (configuration, input checks, warnings) and is unit-tested without a model. The model is loaded once per process (`st.cache_resource`) and reused for every click.
+
+Held-out test results of the fine-tuned adapter (`checkpoint-195`, 222 test reviews), shown in the app's sidebar:
+
+| Metric | Fine-tuned |
+|---|---|
+| Aspect F1 | 85.55% |
+| Aspect + sentiment F1 | 73.77% |
+| Sentiment accuracy (matched aspects) | 86.23% |
+| Sentiment macro F1 | 79.95% |
+| Valid structured responses | 222/222 |
+
+### Where the model runs
+
+| `CFI_DEVICE` | Behavior |
+|---|---|
+| `auto` (default) | 4-bit NF4 on a CUDA GPU with at least 6 GB; otherwise CPU |
+| `cpu` | CPU, bfloat16, no quantization (bitsandbytes 4-bit is GPU-only) |
+| `cuda` | 4-bit on the GPU even if it is small; fails clearly if PyTorch has no CUDA |
+
+The sidebar shows the device that was chosen and why. On CPU the bfloat16 weights alone take about 6 GB of RAM. On a laptop i7-1165G7 with 16 GB, a short review took about 30–40 s, and loading the cached model took between under a minute and a few minutes. A 2 GB laptop GPU (e.g. MX450) is too small for the 3B model even in 4-bit, so `auto` uses the CPU there.
+
+### Windows setup (CPU)
+
+From the project folder in PowerShell:
+
+```powershell
+python -m venv .venv
+.venv\Scripts\Activate.ps1
+
+# CPU build of PyTorch (smaller download; the CUDA build is only useful with a large GPU)
+pip install torch --index-url https://download.pytorch.org/whl/cpu
+pip install -r requirements.txt
+```
+
+### Adapter location
+
+The adapter is not in Git. Copy these two files from the training run on Google Drive (`outputs/qwen2.5-3b-absa-qlora/checkpoint-195/`) into `models\checkpoint-195\`:
+
+```
+models\checkpoint-195\adapter_config.json
+models\checkpoint-195\adapter_model.safetensors
+```
+
+The optimizer and scheduler files in the checkpoint are not needed. `models/` is git-ignored, as are `*.safetensors` files anywhere. To keep the adapter somewhere else, point `CFI_ADAPTER_PATH` at its folder (relative paths are resolved from the project root):
+
+```powershell
+$env:CFI_ADAPTER_PATH = "D:\models\absa-checkpoint-195"   # current terminal only
+setx CFI_ADAPTER_PATH "D:\models\absa-checkpoint-195"     # future terminals
+```
+
+The app checks that the folder contains both files and that `adapter_config.json` names `Qwen/Qwen2.5-3B-Instruct` before it loads anything. No access token is needed.
+
+### Launch
+
+```powershell
+.venv\Scripts\Activate.ps1
+streamlit run streamlit_app.py
+```
+
+Streamlit opens http://localhost:8501. The first analysis downloads the base model (about 6 GB) into the Hugging Face cache (`%USERPROFILE%\.cache\huggingface`) and loads it, which can take several minutes; later analyses reuse the loaded model. The model was trained on single review sentences from SemEval-2014, so short reviews work best; input is limited to 1,500 characters.
 
 ## Setup
 

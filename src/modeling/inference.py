@@ -58,12 +58,25 @@ class AbsaPredictor:
         model_name: str = DEFAULT_MODEL,
         adapter_path: str | None = None,
         load_in_4bit: bool = True,
+        dtype: str | None = None,
+        device_map: str = "auto",
         **kwargs,
     ) -> "AbsaPredictor":
+        """Load the base model (and optional LoRA adapter).
+
+        ``dtype`` defaults to bf16 on GPUs that support it and fp16 otherwise;
+        pass e.g. ``dtype="bfloat16", device_map="cpu", load_in_4bit=False``
+        to run on CPU, where bitsandbytes 4-bit loading is not used.
+        """
         import torch
         from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
 
-        dtype = torch.bfloat16 if torch.cuda.is_available() and torch.cuda.is_bf16_supported() else torch.float16
+        if load_in_4bit and device_map == "cpu":
+            raise ValueError("4-bit loading needs a CUDA GPU; use load_in_4bit=False on CPU")
+        if dtype is None:
+            dtype = torch.bfloat16 if torch.cuda.is_available() and torch.cuda.is_bf16_supported() else torch.float16
+        else:
+            dtype = getattr(torch, dtype)
         quantization = (
             BitsAndBytesConfig(
                 load_in_4bit=True,
@@ -76,7 +89,7 @@ class AbsaPredictor:
         )
         tokenizer = AutoTokenizer.from_pretrained(model_name)
         model = AutoModelForCausalLM.from_pretrained(
-            model_name, quantization_config=quantization, dtype=dtype, device_map="auto"
+            model_name, quantization_config=quantization, dtype=dtype, device_map=device_map
         )
         if adapter_path:
             from peft import PeftModel

@@ -168,6 +168,69 @@ def test_truncated_generation_is_flagged():
     assert complete["truncated"] is False
 
 
+class FakeTorch(types.SimpleNamespace):
+    def __init__(self, cuda_bf16):
+        cuda = types.SimpleNamespace(is_available=lambda: cuda_bf16 is not None, is_bf16_supported=lambda: bool(cuda_bf16))
+        super().__init__(bfloat16="bf16", float16="fp16", cuda=cuda, inference_mode=contextlib.nullcontext)
+
+
+class FakeLoadedModel:
+    def eval(self):
+        self.evaluated = True
+        return self
+
+
+@pytest.fixture
+def transformers_calls(monkeypatch):
+    calls = {}
+
+    def load_model(name, **kwargs):
+        calls["model"] = (name, kwargs)
+        return FakeLoadedModel()
+
+    fake = types.SimpleNamespace(
+        AutoTokenizer=types.SimpleNamespace(from_pretrained=lambda name: FakeTokenizer()),
+        AutoModelForCausalLM=types.SimpleNamespace(from_pretrained=load_model),
+        BitsAndBytesConfig=lambda **kwargs: ("bnb", kwargs),
+    )
+    monkeypatch.setitem(sys.modules, "transformers", fake)
+    return calls
+
+
+def test_from_pretrained_defaults_are_unchanged(monkeypatch, transformers_calls):
+    monkeypatch.setitem(sys.modules, "torch", FakeTorch(cuda_bf16=False))
+    AbsaPredictor.from_pretrained()
+
+    name, kwargs = transformers_calls["model"]
+    assert name == inference.DEFAULT_MODEL
+    assert kwargs["device_map"] == "auto"
+    assert kwargs["dtype"] == "fp16"
+    assert kwargs["quantization_config"] == ("bnb", {"load_in_4bit": True, "bnb_4bit_quant_type": "nf4",
+                                                     "bnb_4bit_compute_dtype": "fp16",
+                                                     "bnb_4bit_use_double_quant": True})
+
+    monkeypatch.setitem(sys.modules, "torch", FakeTorch(cuda_bf16=True))
+    AbsaPredictor.from_pretrained()
+    assert transformers_calls["model"][1]["dtype"] == "bf16"
+
+
+def test_from_pretrained_on_cpu_loads_unquantized_with_the_requested_dtype(monkeypatch, transformers_calls):
+    monkeypatch.setitem(sys.modules, "torch", FakeTorch(cuda_bf16=None))
+    predictor = AbsaPredictor.from_pretrained(load_in_4bit=False, dtype="bfloat16", device_map="cpu", batch_size=1)
+
+    _, kwargs = transformers_calls["model"]
+    assert kwargs == {"quantization_config": None, "dtype": "bf16", "device_map": "cpu"}
+    assert predictor.batch_size == 1
+    assert predictor.model.evaluated
+
+
+def test_from_pretrained_refuses_4bit_on_cpu(monkeypatch, transformers_calls):
+    monkeypatch.setitem(sys.modules, "torch", FakeTorch(cuda_bf16=None))
+    with pytest.raises(ValueError, match="4-bit loading needs a CUDA GPU"):
+        AbsaPredictor.from_pretrained(device_map="cpu")
+    assert "model" not in transformers_calls
+
+
 def test_heavy_dependencies_are_not_imported_at_module_level():
     source = open(inference.__file__, encoding="utf-8").read().split("class AbsaPredictor")[0]
     assert "import torch" not in source
