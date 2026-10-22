@@ -16,6 +16,7 @@ from src.modeling.train import (
     DEFAULT_TRAIN_CONFIG,
     TRAINING_SPLITS,
     check_token_lengths,
+    check_transformers_version,
     check_trl_support,
     load_sft_split,
     load_train_config,
@@ -220,9 +221,73 @@ def test_trl_without_answer_only_loss_is_rejected():
         max_length: int = 1024
         completion_only_loss: bool = True
 
-    check_trl_support(NewSFTConfig)
+    check_trl_support(NewSFTConfig, {"max_length": 1024})
     with pytest.raises(RuntimeError, match="upgrade trl"):
-        check_trl_support(OldSFTConfig)
+        check_trl_support(OldSFTConfig, {})
+
+
+# --- Regression: transformers 5 removed warmup_ratio (Colab TypeError) ---------------------
+
+PINNED_FIELDS = json.loads((Path(__file__).parent / "fixtures" / "sft_config_fields.json").read_text(encoding="utf-8"))
+
+
+def test_config_keys_are_accepted_by_pinned_sft_config():
+    training = load_train_config(DEFAULT_TRAIN_CONFIG)["training"]
+    unsupported = sorted(set(training) - set(PINNED_FIELDS["fields"]))
+    assert unsupported == [], f"not accepted by trl {PINNED_FIELDS['trl']}: {unsupported}"
+    assert "warmup_ratio" not in PINNED_FIELDS["fields"]
+
+
+def test_fixture_matches_pinned_requirements():
+    requirements = (PROJECT_ROOT / "requirements.txt").read_text(encoding="utf-8").splitlines()
+    assert f"transformers=={PINNED_FIELDS['transformers']}" in requirements
+    assert f"trl=={PINNED_FIELDS['trl']}" in requirements
+
+
+def test_warmup_is_three_percent_of_total_steps():
+    # transformers 5: warmup_steps < 1 is a ratio, applied as ceil(total_steps * ratio).
+    assert load_train_config(DEFAULT_TRAIN_CONFIG)["training"]["warmup_steps"] == 0.03
+
+
+def test_warmup_ratio_in_config_is_rejected_with_replacement(tmp_path):
+    path = write_config(tmp_path, lambda c: c["training"].update(warmup_ratio=0.03))
+    with pytest.raises(ValueError, match="warmup_steps: 0.03"):
+        load_train_config(path)
+
+
+def test_unsupported_key_is_named_before_the_model_loads():
+    # Mirrors transformers 5.20.2: warmup_steps exists, warmup_ratio does not.
+    @dataclasses.dataclass
+    class SFTConfigWithoutWarmupRatio:
+        max_length: int = 1024
+        completion_only_loss: bool = True
+        warmup_steps: float = 0
+
+    check_trl_support(SFTConfigWithoutWarmupRatio, {"max_length": 1024, "warmup_steps": 0.03})
+    with pytest.raises(RuntimeError, match=r"\['warmup_ratio'\]"):
+        check_trl_support(SFTConfigWithoutWarmupRatio, {"max_length": 1024, "warmup_ratio": 0.03})
+
+
+def test_fractional_warmup_requires_transformers_5():
+    check_transformers_version("5.20.2", {"warmup_steps": 0.03})
+    check_transformers_version("4.57.6", {"warmup_steps": 10})
+    with pytest.raises(RuntimeError, match="transformers>=5"):
+        check_transformers_version("4.57.6", {"warmup_steps": 0.03})
+
+
+def test_compatibility_checks_run_before_model_loading():
+    source = Path(train_module.__file__).read_text(encoding="utf-8")
+    body = source.split("def train(")[1]
+    model_load = body.index("AutoModelForCausalLM.from_pretrained(")
+    assert body.index("check_trl_support(") < model_load
+    assert body.index("check_transformers_version(") < model_load
+
+
+def test_installed_sft_config_accepts_config():
+    # Runs where trl is installed (Colab); skipped locally.
+    trl = pytest.importorskip("trl")
+    training = load_train_config(DEFAULT_TRAIN_CONFIG)["training"]
+    check_trl_support(trl.SFTConfig, sft_config_kwargs(training))
 
 
 def test_heavy_dependencies_are_not_imported_at_module_level():

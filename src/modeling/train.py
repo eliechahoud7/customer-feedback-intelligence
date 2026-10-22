@@ -54,6 +54,11 @@ def load_train_config(path: Path) -> dict:
         raise ValueError("training.completion_only_loss must be true: the loss must cover only the answer")
     if not isinstance(training.get("max_length"), int) or training["max_length"] <= 0:
         raise ValueError("training.max_length must be a positive integer")
+    if "warmup_ratio" in training:
+        raise ValueError(
+            "training.warmup_ratio was removed in transformers 5; use warmup_steps with a value below 1 "
+            "(e.g. warmup_steps: 0.03 for 3% of total steps)"
+        )
 
     precisions = [name for name in COMPUTE_DTYPE_FOR_PRECISION if training.get(name)]
     if len(precisions) > 1:
@@ -109,12 +114,32 @@ def check_token_lengths(lengths: list[int], max_length: int, split: str) -> dict
     }
 
 
-def check_trl_support(sft_config_class) -> None:
-    """The installed TRL must support answer-only loss on prompt/completion data."""
+def check_trl_support(sft_config_class, training: dict) -> None:
+    """The installed SFTConfig must support answer-only loss and every configured key.
+
+    Runs before the model is loaded, so a renamed or removed setting fails in
+    seconds with the offending keys named, not deep inside SFTConfig.
+    """
     fields = {field.name for field in dataclasses.fields(sft_config_class)}
     missing = [name for name in REQUIRED_SFT_CONFIG_FIELDS if name not in fields]
     if missing:
         raise RuntimeError(f"installed trl does not support SFTConfig fields {missing}; upgrade trl")
+    unsupported = sorted(key for key in training if key not in fields)
+    if unsupported:
+        raise RuntimeError(
+            f"configs/train.yaml training keys not accepted by the installed SFTConfig: {unsupported}; "
+            "check the pinned trl/transformers versions in requirements.txt"
+        )
+
+
+def check_transformers_version(version: str, training: dict) -> None:
+    """A fractional warmup_steps is a ratio only in transformers 5 and later."""
+    warmup = training.get("warmup_steps", 0)
+    if 0 < warmup < 1 and int(version.split(".")[0]) < 5:
+        raise RuntimeError(
+            f"warmup_steps={warmup} is a fraction of total steps only in transformers>=5 "
+            f"(installed {version}); install the versions pinned in requirements.txt"
+        )
 
 
 def sft_config_kwargs(training: dict, max_steps: int | None = None) -> dict:
@@ -172,7 +197,9 @@ def train(config: dict, check_data: bool = False, max_steps: int | None = None) 
     from transformers import AutoModelForCausalLM, BitsAndBytesConfig, set_seed
     from trl import SFTConfig, SFTTrainer
 
-    check_trl_support(SFTConfig)
+    sft_kwargs = sft_config_kwargs(config["training"], max_steps)
+    check_trl_support(SFTConfig, sft_kwargs)
+    check_transformers_version(metadata.version("transformers"), sft_kwargs)
     set_seed(config["training"]["seed"])
 
     quantization = dict(config["quantization"])
@@ -180,7 +207,7 @@ def train(config: dict, check_data: bool = False, max_steps: int | None = None) 
     model = AutoModelForCausalLM.from_pretrained(
         config["model"]["name"],
         quantization_config=BitsAndBytesConfig(**quantization, bnb_4bit_compute_dtype=compute_dtype),
-        torch_dtype=compute_dtype,
+        dtype=compute_dtype,
         attn_implementation=config["model"]["attn_implementation"],
         device_map="auto",
     )
@@ -193,7 +220,7 @@ def train(config: dict, check_data: bool = False, max_steps: int | None = None) 
     model = get_peft_model(model, LoraConfig(**config["lora"], task_type="CAUSAL_LM"))
     model.print_trainable_parameters()
 
-    args = SFTConfig(**sft_config_kwargs(config["training"], max_steps))
+    args = SFTConfig(**sft_kwargs)
     trainer = SFTTrainer(
         model=model,
         args=args,

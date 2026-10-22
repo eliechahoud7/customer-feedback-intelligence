@@ -29,7 +29,9 @@ training:
   per_device_eval_batch_size: 4
   gradient_accumulation_steps: 4
   lr_scheduler_type: cosine
-  warmup_ratio: 0.03
+  # transformers 5 removed warmup_ratio; a warmup_steps value below 1 is a
+  # fraction of total steps (here 3%, rounded up).
+  warmup_steps: 0.03
   weight_decay: 0.0
   max_length: 1024
   # Loss on the assistant answer only, not the system prompt or review.

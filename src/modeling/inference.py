@@ -76,7 +76,7 @@ class AbsaPredictor:
         )
         tokenizer = AutoTokenizer.from_pretrained(model_name)
         model = AutoModelForCausalLM.from_pretrained(
-            model_name, quantization_config=quantization, torch_dtype=dtype, device_map="auto"
+            model_name, quantization_config=quantization, dtype=dtype, device_map="auto"
         )
         if adapter_path:
             from peft import PeftModel
