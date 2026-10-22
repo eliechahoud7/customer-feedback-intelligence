@@ -6,7 +6,9 @@ torch>=2.3
 # Hugging Face stack (model loading, LoRA adapters, supervised fine-tuning)
 transformers>=4.45
 peft>=0.13
-trl>=0.12
+# Answer-only loss on conversational prompt/completion data needs SFTConfig's
+# completion_only_loss and max_length; src/modeling/train.py checks for both.
+trl>=0.20
 accelerate>=1.0
 bitsandbytes>=0.44
 datasets>=3.0

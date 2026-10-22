@@ -54,7 +54,7 @@ Code, configs and the prepared splits in `data/splits/` are versioned. `data/raw
 2. **Data acquisition & EDA** ✅ — SemEval-2014 laptops ABSA dataset; label schema and class balance inspected.
 3. **Data preprocessing** ✅ — validation, review grouping, leakage-free stratified splits, instruction-tuning examples, answer parser.
 4. **Baseline evaluation** — run zero-shot Qwen2.5-3B-Instruct with the shared prompt to establish reference scores.
-5. **QLoRA fine-tuning** — 4-bit NF4 base model + LoRA adapters trained with TRL's `SFTTrainer`; hyperparameters in `configs/`.
+5. **QLoRA fine-tuning** — 4-bit NF4 base model + LoRA adapters trained with TRL's `SFTTrainer`. The script and `configs/train.yaml` are ready; no training run has been done yet.
 6. **Evaluation & error analysis** — macro F1, per-class metrics, confusion matrix, invalid-output rate; compare against the baseline.
 7. **Streamlit app** — enter or upload feedback, get predicted labels, view batch summaries.
 8. **Packaging & documentation** — final results, model card, reproducibility instructions.
@@ -137,6 +137,26 @@ Predicted terms are grounded in the review text. Repeated terms map to successiv
 - **Round trip.** Every reference answer is parsed back with the evaluation parser and must reproduce the original terms and labels exactly, all found verbatim in the review.
 - **Checksums.** `data/processed/sft/manifest.json` records SHA-256 checksums of the source splits and generated files, the prompt version and a hash of the system prompt. `verify_manifest()` fails if any of them changed since the build. `.gitattributes` keeps `.jsonl` files LF-only so checksums match across operating systems.
 - **Train-only changes.** Validation and test are never used for training, augmentation or oversampling. Prompt and hyperparameter choices are made on validation, and test is scored once at the end.
+
+## QLoRA fine-tuning (Colab T4)
+
+```bash
+git clone https://github.com/eliechahoud7/customer-feedback-intelligence.git && cd customer-feedback-intelligence
+pip install -r requirements.txt               # Colab's preinstalled CUDA PyTorch already satisfies torch
+python -m src.data.build_sft_dataset          # SFT files are generated, not committed
+python -m src.modeling.train --check-data     # verify data + real token lengths, no training
+python -m src.modeling.train --max-steps 5    # smoke run (outputs/...-smoke)
+python -m src.modeling.train                  # full run, settings in configs/train.yaml
+```
+
+`src/modeling/train.py`:
+- **Data checks:** it checks the SFT manifest against the current splits, and loads **only** `train.jsonl` and `validation.jsonl`. Metadata columns are dropped, and every row's `split` and `prompt_version` are checked.
+- **Length check:** it stops if any example, rendered with the real chat template, is longer than `max_length`.
+- **Training:** it loads the model in 4-bit NF4 with float16 compute (T4 has no bf16), then applies `prepare_model_for_kbit_training` and LoRA on all attention and MLP projections. It trains with TRL's `SFTTrainer` with `completion_only_loss`, so only the JSON answer is learned, plus gradient checkpointing, `paged_adamw_8bit` and SDPA attention.
+- **TRL check:** it stops at startup if the installed TRL lacks `completion_only_loss` or `max_length`.
+- **Outputs:** a checkpoint each epoch, the final adapter in `outputs/qwen2.5-3b-absa-qlora/final/`, and `run_info.json`. That file records the config, data checksums, token-length statistics, the training log, library versions and the git commit.
+
+**Choosing a checkpoint:** score each epoch's checkpoint on **validation** with `python -m src.modeling.inference --adapter outputs/qwen2.5-3b-absa-qlora/checkpoint-N --output …`, and keep the one with the best aspect + sentiment F1. The test split is scored once, on the chosen checkpoint, with `--final-test`.
 
 ## Inference and evaluation
 

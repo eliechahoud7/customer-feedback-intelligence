@@ -1,0 +1,49 @@
+# QLoRA fine-tuning of Qwen2.5-3B-Instruct on a single Colab T4 (16 GB, no bf16).
+# Starting values, not yet tuned; tune on validation only.
+
+model:
+  name: Qwen/Qwen2.5-3B-Instruct
+  # FlashAttention 2 is not supported on T4.
+  attn_implementation: sdpa
+
+quantization:
+  load_in_4bit: true
+  bnb_4bit_quant_type: nf4
+  bnb_4bit_use_double_quant: true
+  # T4 has no bf16 support; must match the training precision below.
+  bnb_4bit_compute_dtype: float16
+
+lora:
+  r: 16
+  lora_alpha: 32
+  lora_dropout: 0.05
+  bias: none
+  target_modules: [q_proj, k_proj, v_proj, o_proj, gate_proj, up_proj, down_proj]
+
+# Passed to trl.SFTConfig as-is.
+training:
+  output_dir: outputs/qwen2.5-3b-absa-qlora
+  num_train_epochs: 3
+  learning_rate: 2.0e-4
+  per_device_train_batch_size: 4
+  per_device_eval_batch_size: 4
+  gradient_accumulation_steps: 4
+  lr_scheduler_type: cosine
+  warmup_ratio: 0.03
+  weight_decay: 0.0
+  max_length: 1024
+  # Loss on the assistant answer only, not the system prompt or review.
+  completion_only_loss: true
+  gradient_checkpointing: true
+  gradient_checkpointing_kwargs:
+    use_reentrant: false
+  fp16: true
+  bf16: false
+  optim: paged_adamw_8bit
+  # Validation loss each epoch; checkpoints are chosen later by validation F1.
+  eval_strategy: epoch
+  save_strategy: epoch
+  logging_steps: 10
+  seed: 42
+  data_seed: 42
+  report_to: none
