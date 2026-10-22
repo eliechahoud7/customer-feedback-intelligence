@@ -138,6 +138,41 @@ Predicted terms are grounded in the review text. Repeated terms map to successiv
 - **Checksums.** `data/processed/sft/manifest.json` records SHA-256 checksums of the source splits and generated files, the prompt version and a hash of the system prompt. `verify_manifest()` fails if any of them changed since the build. `.gitattributes` keeps `.jsonl` files LF-only so checksums match across operating systems.
 - **Train-only changes.** Validation and test are never used for training, augmentation or oversampling. Prompt and hyperparameter choices are made on validation, and test is scored once at the end.
 
+## Inference and evaluation
+
+Run inference and scoring through the tested modules, not ad-hoc notebook code. The validation split is the default. The test split is refused unless `--final-test` is passed, and it is reserved for the single final evaluation.
+
+```bash
+# Colab (GPU): generate raw outputs for the validation split and score them
+python -m src.modeling.inference --split validation --output outputs/baseline_validation.jsonl
+
+# Anywhere: re-score saved raw outputs without re-running the model
+python -m src.evaluation.metrics --responses outputs/baseline_validation.jsonl --per-review outputs/baseline_validation_scores.jsonl
+```
+
+**Inference** (`src/modeling/inference.py`): `AbsaPredictor` loads the model once, in 4-bit by default with an optional LoRA adapter, and reuses it for batched generation.
+- Prompts are rendered from the shared messages with `apply_chat_template(..., add_generation_prompt=True)`, using left padding.
+- Decoding is greedy. Qwen's default sampling settings and `repetition_penalty=1.05` are overridden explicitly, because a repetition penalty also applies to greedy search.
+- Only newly generated tokens are decoded.
+- Each output row keeps the raw `response` next to the parse `status`, errors, grounded aspects, and a `truncated` flag.
+
+**Metrics** (`src/evaluation/metrics.py`): answers are parsed with `src/evaluation/parsing.py`. Within a review, the k-th prediction of a term is paired with the k-th gold occurrence of that term, ignoring case and extra whitespace.
+
+| Metric | Definition |
+|--------|------------|
+| Aspect P/R/F1 | Matched terms vs. all predicted and all gold aspects |
+| Aspect + sentiment P/R/F1 | Matched terms whose sentiment is also correct |
+| Sentiment macro F1 | Over the four labels, on matched aspects; also reported without `conflict` (gold-`conflict` aspects left out) |
+| Response diagnostics | Valid / malformed / invalid-JSON / empty-answer / code-fence counts, invented aspects, unreadable items, invalid labels, case mismatches |
+
+Every prediction counts:
+- Invented aspects and unreadable items are false positives.
+- Invalid-JSON answers contribute no predictions, so their gold aspects are missed.
+- Invalid labels never match.
+- Empty denominators give 0.0, and the raw counts are reported alongside.
+
+As a sanity check, scoring the reference answers on validation gives 1.0 for every metric (`tests/test_metrics.py`).
+
 ### Known limitations
 
 - **Every labeled review has at least one aspect**, because the source dataset excludes aspect-free sentences. The model never sees a `[]` answer during training and may invent aspects for reviews without any. Evaluation tracks this through the invented-aspect rate.
