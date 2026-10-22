@@ -156,7 +156,17 @@ python -m src.modeling.train                  # full run, settings in configs/tr
 - **TRL check:** it stops at startup if the installed TRL lacks `completion_only_loss` or `max_length`.
 - **Outputs:** a checkpoint each epoch, the final adapter in `outputs/qwen2.5-3b-absa-qlora/final/`, and `run_info.json`. That file records the config, data checksums, token-length statistics, the training log, library versions and the git commit.
 
-**Choosing a checkpoint:** score each epoch's checkpoint on **validation** with `python -m src.modeling.inference --adapter outputs/qwen2.5-3b-absa-qlora/checkpoint-N --output …`, and keep the one with the best aspect + sentiment F1. The test split is scored once, on the chosen checkpoint, with `--final-test`.
+**Choosing a checkpoint**, on validation only:
+
+```bash
+python -m src.evaluation.select_checkpoint --run-dir outputs/qwen2.5-3b-absa-qlora
+```
+
+- **Generating:** each `checkpoint-<step>` gets validation predictions from `src.modeling.inference`, run as a separate process so GPU memory is freed. Existing prediction files in `outputs/eval/` are reused; `--regenerate` re-runs them, and `--score-only` never runs the model.
+- **Choosing:** the checkpoint with the highest aspect + sentiment F1 wins. Ties go to the higher aspect F1, then to the earlier checkpoint.
+- **Stopping:** missing predictions or invalid metrics stop the selection.
+- **Report:** `outputs/eval/checkpoint_selection.json` records the selected checkpoint, every candidate's metrics, and checksums of the prediction files and validation split. It has no timestamps, so the same predictions give the same report.
+- **Test split:** never read. It is scored once, on the selected checkpoint, with `--final-test`.
 
 ## Inference and evaluation
 
