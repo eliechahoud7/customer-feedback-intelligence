@@ -252,7 +252,14 @@ flowchart LR
 
 ## Screenshots
 
-No screenshots are committed yet. To add them, save images under `docs/images/` and reference them here, for example `![Analysis result](docs/images/app-result.png)`.
+### Project Dashboard
+
+![Customer Feedback Intelligence dashboard](docs/images/dashboard.png)
+
+### Prediction Results
+
+![Customer feedback aspect-based sentiment analysis results](docs/images/prediction-results.png)
+
 
 ## Limitations
 
