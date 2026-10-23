@@ -196,12 +196,12 @@ except Exception as error:  # e.g. PyTorch missing or broken
 render_sidebar(runtime, settings, setup_error)
 
 st.text_area(
-    "Laptop review",
+    "Review",  # hidden; kept for screen readers
     key="review",
     height=140,
     max_chars=service.MAX_REVIEW_CHARS,
-    placeholder="Paste a laptop review, e.g. “Great display, but the battery barely lasts three hours.”",
-    help="The model was trained on review sentences from SemEval-2014; short reviews work best.",
+    placeholder="Paste your review here...",
+    label_visibility="collapsed",
 )
 example_column, clear_column, _ = st.columns([1.3, 1, 3])
 example_column.button("Try an example", on_click=load_example, width="stretch")
