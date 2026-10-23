@@ -28,9 +28,13 @@ def adapter(tmp_path, monkeypatch):
     (directory / "adapter_model.safetensors").write_bytes(b"weights")
     monkeypatch.setenv("CFI_ADAPTER_PATH", str(directory))
     monkeypatch.setenv("CFI_DEVICE", "cpu")
+    monkeypatch.delenv("CFI_API_URL", raising=False)
+    monkeypatch.delenv("CFI_API_TOKEN", raising=False)
     st.cache_resource.clear()
+    st.cache_data.clear()
     yield directory
     st.cache_resource.clear()
+    st.cache_data.clear()
 
 
 @pytest.fixture
@@ -116,6 +120,93 @@ def test_load_failure_shows_a_friendly_error(adapter, monkeypatch):
     analyze_button(app).click().run()
     assert not app.exception
     assert "could not be downloaded" in app.error[0].value
+
+
+TOKEN = "t" * 40
+READY = {"status": "ready", "gpu": "Tesla T4", "model_device": "cuda:0", "precision": "CUDA GPU, 4-bit NF4",
+         "adapter": "checkpoint-195", "load_seconds": 95.0}
+
+
+class FakeRemote:
+    """Stands in for RemotePredictor; ``outcome`` is a prediction dict or an exception."""
+
+    instances = []
+
+    def __init__(self, settings, outcome=None, health=READY):
+        self.settings, self.outcome, self._health, self.max_new_tokens = settings, outcome, health, 256
+        FakeRemote.instances.append(self)
+
+    def health(self):
+        if isinstance(self._health, Exception):
+            raise self._health
+        return self._health
+
+    def predict(self, records):
+        if isinstance(self.outcome, Exception):
+            raise self.outcome
+        canned = CannedPredictor({REVIEW: answer(("screen", "positive"), ("battery life", "negative"))})
+        return [{**p, "server_seconds": 0.9} for p in canned.predict(records)]
+
+
+@pytest.fixture
+def remote_mode(adapter, loads, monkeypatch):
+    from src.app import remote
+
+    monkeypatch.setenv("CFI_API_URL", "https://abc.trycloudflare.com")
+    monkeypatch.setenv("CFI_API_TOKEN", TOKEN)
+    FakeRemote.instances = []
+
+    def use(outcome=None, health=READY):
+        monkeypatch.setattr(remote, "RemotePredictor", lambda settings: FakeRemote(settings, outcome, health))
+
+    use()
+    return use
+
+
+def test_remote_mode_analyzes_on_the_api_and_never_loads_locally(remote_mode, loads):
+    app = run_app()
+    assert not app.exception
+    sidebar = " ".join(m.value for m in app.sidebar.markdown)
+    assert "remote inference API" in sidebar and "abc.trycloudflare.com" in sidebar
+    assert TOKEN not in sidebar
+    assert "Model ready on Tesla T4" in app.sidebar.success[0].value
+
+    app.text_area(key="review").input(REVIEW)
+    analyze_button(app).click().run()
+    assert not app.error
+    assert {m.label: m.value for m in app.metric}["🟢 Positive"] == "1"
+    assert any("0.9 s on the server" in c.value for c in app.caption)
+    assert loads == []
+
+
+def test_remote_failure_is_shown_without_falling_back_to_cpu(remote_mode, loads):
+    remote_mode(outcome=service.AppError("Cannot reach the inference API at abc.trycloudflare.com."))
+    app = run_app()
+    app.text_area(key="review").input(REVIEW)
+    analyze_button(app).click().run()
+    assert not app.exception
+    assert app.error[0].value == "Cannot reach the inference API at abc.trycloudflare.com."
+    assert not app.metric
+    assert loads == []
+
+
+def test_remote_status_problems_are_shown_in_the_sidebar(remote_mode):
+    remote_mode(health=service.AppError("The inference API at abc.trycloudflare.com is unavailable (HTTP 530)."))
+    app = run_app()
+    assert "unavailable (HTTP 530)" in app.sidebar.warning[0].value
+    assert not analyze_button(app).disabled  # the user can retry once the service is back
+
+    st.cache_data.clear()
+    st.cache_resource.clear()
+    remote_mode(health={"status": "loading"})
+    assert "still loading" in run_app().sidebar.info[0].value
+
+
+def test_remote_mode_without_a_token_is_a_setup_error(remote_mode, monkeypatch):
+    monkeypatch.delenv("CFI_API_TOKEN")
+    app = run_app()
+    assert any("CFI_API_TOKEN is not" in e.value for e in app.error)
+    assert analyze_button(app).disabled
 
 
 def test_missing_adapter_disables_analysis(tmp_path, monkeypatch, loads):

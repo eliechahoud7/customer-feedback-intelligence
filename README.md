@@ -39,7 +39,8 @@ customer-feedback-intelligence/
 │   ├── data/         # Loading, cleaning, label mapping, prompt formatting, splitting
 │   ├── modeling/     # Model/tokenizer loading, QLoRA config, training & inference
 │   ├── evaluation/   # Metrics (macro F1 etc.), output parsing, reports
-│   └── app/          # Streamlit app logic (service.py: config, input checks, results)
+│   ├── app/          # Streamlit app logic (service.py) and the remote API client (remote.py)
+│   └── serving/      # GPU inference API (FastAPI) and latency/validation benchmark
 ├── tests/            # Unit tests for data processing, parsing, metrics and the app
 ├── configs/          # YAML configs for data, training hyperparameters, evaluation
 ├── models/           # Local copy of the trained LoRA adapter (git-ignored)
@@ -281,6 +282,84 @@ streamlit run streamlit_app.py
 ```
 
 Streamlit opens http://localhost:8501. The first analysis downloads the base model (about 6 GB) into the Hugging Face cache (`%USERPROFILE%\.cache\huggingface`) and loads it, which can take several minutes; later analyses reuse the loaded model. The model was trained on single review sentences from SemEval-2014, so short reviews work best; input is limited to 1,500 characters.
+
+## Remote GPU inference (Colab)
+
+The Streamlit app can stay on your PC while the model runs on a Colab GPU. `src/serving/api.py` is a small FastAPI service around the same `AbsaPredictor`, prompt, parser and 4-bit GPU configuration used for evaluation; the app talks to it through `src/app/remote.py`.
+
+```
+Streamlit (Windows) --HTTPS + bearer token--> Cloudflare quick tunnel --> FastAPI on 127.0.0.1:8000 (Colab T4)
+```
+
+- **Loaded once.** The service loads the model in a background thread at startup and serves every request with it. It then runs one warm-up review so the first real request does not pay one-time CUDA costs. Requests are generated one at a time on the single GPU.
+- **Endpoints.** Both need `Authorization: Bearer <token>`.
+  - `GET /health` returns `status` (`loading`, `ready` or `error`), the GPU name, the model device (`cuda:0`), the precision, load time and warm-up timings.
+  - `POST /predict` takes `{"text": "<review>"}` and returns the same fields as `AbsaPredictor.predict` plus `server_seconds`, `device` and `max_new_tokens`.
+  - Invalid input returns 422, a request made while the model is loading returns 503, and an inference failure returns 500. Each comes with a readable `detail`.
+- **Security.**
+  - The service refuses to start without a `CFI_API_TOKEN` of at least 32 characters, and compares tokens in constant time.
+  - It listens on `127.0.0.1` only, and has no interactive docs.
+  - The app refuses `http://` for any host other than localhost, so the token is never sent in clear text.
+- **No silent fallback.** When `CFI_API_URL` is set, the app only uses the API. If the API fails, the app shows the error and does not fall back to slow CPU inference. Remove `CFI_API_URL` to use local inference again.
+
+### 1. Create a token
+
+On your PC, run:
+
+```powershell
+python -c "import secrets; print(secrets.token_urlsafe(32))"
+```
+
+Add it as a Colab secret named `CFI_API_TOKEN`, using the key icon and enabling notebook access. Also add `GITHUB_TOKEN`, which the training notebook already uses. Never paste the token into a notebook cell or commit it.
+
+### 2. Start the service in Colab
+
+Open `notebooks/colab_inference_api.ipynb` in Colab and choose *Runtime > Change runtime type > T4 GPU*. Then *Run all*. The notebook:
+
+1. mounts Drive and checks the adapter at `MyDrive/customer-feedback-intelligence/outputs/qwen2.5-3b-absa-qlora/checkpoint-195/`;
+2. installs `requirements.txt`, and asks for a restart only if a model library changed;
+3. starts the API with `CFI_DEVICE=cuda`, so it fails clearly instead of loading on CPU, then waits until `/health` reports `ready` and prints the GPU and timings;
+4. starts a Cloudflare quick tunnel and prints `CFI_API_URL = https://<name>.trycloudflare.com`;
+5. checks through the tunnel that requests with the token succeed and requests without it get `401`;
+6. measures latency on Colab, and sends the 222 **validation** reviews through the API. It scores them with the project's metrics and compares the raw answers with the saved predictions from checkpoint selection.
+
+The quick tunnel needs no Cloudflare account. Its URL is random and public, which is why every request must carry the token. For a stable hostname, use a named Cloudflare tunnel or ngrok with your own account instead.
+
+### 3. Point the local app at the service
+
+```powershell
+$env:CFI_API_URL = "https://<name>.trycloudflare.com"   # printed by the notebook
+$env:CFI_API_TOKEN = "<the same token as the Colab secret>"
+streamlit run streamlit_app.py
+```
+
+Set the variables in the terminal session rather than with `setx`, so the token is not stored permanently. The sidebar should say **Runs on: remote inference API** and **Model ready on Tesla T4 (CUDA GPU, 4-bit NF4)**, with the model device `cuda:0`. Each result shows its total time and the time spent on the server.
+
+To measure latency from your PC, including the tunnel:
+
+```powershell
+python -m src.serving.benchmark --requests 6
+```
+
+It reports the first request and the median of the following requests separately, as client time (including network) and as server time.
+
+### Expired sessions and disconnected endpoints
+
+Colab stops idle sessions and limits session length. When the session or the tunnel stops:
+
+- **When the app is affected:** the next analysis fails with an error such as *Cannot reach the inference API* or *unavailable (HTTP 530)*, and the sidebar shows the same status. Nothing is retried on the CPU.
+- **Restart:** run the notebook from section 4 again. If the runtime was reset, run all of it.
+- **Update the URL:** the tunnel URL changes every time, so set the new `CFI_API_URL` and restart Streamlit, or click *Refresh status*.
+- **Change the token:** update the Colab secret and restart the API cell, then update `CFI_API_TOKEN` locally.
+- **Stop:** the notebook's last cell stops the tunnel and the API and frees the GPU.
+
+### Latency notes
+
+- **Local CPU (i7-1165G7, bfloat16), measured:**
+  - loading the cached model took about 15 s;
+  - each review took 29–38 s for 31–58 output tokens;
+  - about 19 s of that was prompt prefill (243 prompt tokens), and each output token took about 0.35 s.
+- **Remote GPU: not measured yet.** The service reports its own warm-up split (prefill time against time per generated token) in `/health`, and the benchmark reports first and later requests. Use those numbers to decide whether further optimizations, such as caching the fixed system prompt, are worth adding.
 
 ## Setup
 

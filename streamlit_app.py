@@ -5,6 +5,10 @@ Run from the project root:
 
 Model loading, prompting and parsing live in src/app/service.py and the
 modules it reuses; this file only lays out the page.
+
+With CFI_API_URL and CFI_API_TOKEN set, reviews are sent to the GPU inference
+API (src/serving/api.py) instead of a local model. If the API fails, the app
+shows the error; it never falls back to local CPU inference.
 """
 
 from __future__ import annotations
@@ -15,7 +19,7 @@ import traceback
 import pandas as pd
 import streamlit as st
 
-from src.app import service
+from src.app import remote, service
 
 st.set_page_config(page_title="Customer Feedback Intelligence", page_icon="💻", layout="centered")
 
@@ -34,6 +38,20 @@ def get_predictor(adapter_path: str, device: str):
     from pathlib import Path
 
     return service.load_predictor(Path(adapter_path), device)
+
+
+@st.cache_resource(show_spinner=False)
+def get_remote_predictor(settings: remote.RemoteSettings):
+    """One HTTP client (and connection pool) per API URL and token."""
+    return remote.RemotePredictor(settings)
+
+
+@st.cache_data(ttl=15, show_spinner=False)
+def remote_health(settings: remote.RemoteSettings) -> tuple[dict | None, str | None]:
+    try:
+        return get_remote_predictor(settings).health(), None
+    except service.AppError as error:
+        return None, str(error)
 
 
 def load_example() -> None:
@@ -64,19 +82,40 @@ def highlighted_review(segments: list[tuple[str, str | None]]) -> str:
 
 def show_error(message: str, error: BaseException) -> None:
     st.error(message)
+    if isinstance(error, service.AppError):
+        return
     with st.expander("Technical details"):
         st.code("".join(traceback.format_exception(error)), language="text")
 
 
-def render_sidebar(runtime: service.Runtime | None, adapter_error: str | None) -> None:
+def render_remote_status(settings: remote.RemoteSettings) -> None:
+    st.markdown(f"**Runs on:** remote inference API  \n`{settings.host}`")
+    health, error = remote_health(settings)
+    if error:
+        st.warning(error)
+    elif health["status"] == "ready":
+        st.success(f"Model ready on {health.get('gpu') or health.get('model_device')} ({health.get('precision')})")
+        st.caption(f"Adapter `{health.get('adapter')}` on `{health.get('model_device')}`, "
+                   f"loaded in {health.get('load_seconds')} s.")
+    elif health["status"] == "loading":
+        st.info("The remote model is still loading. This takes a few minutes after the service starts.")
+    else:
+        st.error(f"The remote model failed to load: {health.get('error')}")
+    st.button("Refresh status", on_click=remote_health.clear)
+
+
+def render_sidebar(runtime: service.Runtime | None, settings: remote.RemoteSettings | None,
+                   setup_error: str | None) -> None:
     with st.sidebar:
         st.header("Model")
         st.markdown(f"**Base model:** `{service.DEFAULT_MODEL}`  \n**Fine-tuning:** QLoRA")
-        if runtime is not None:
+        if settings is not None:
+            render_remote_status(settings)
+        elif runtime is not None:
             st.markdown(f"**Adapter:** `{runtime.adapter_path.name}`  \n**Runs on:** {runtime.description}")
             st.caption(f"Because {runtime.reason}. Adapter folder: {runtime.adapter_path}")
-        if adapter_error:
-            st.error(adapter_error)
+        if setup_error:
+            st.error(setup_error)
 
         st.header("Held-out test results")
         st.caption("Final evaluation on 222 test reviews that were never used for training or checkpoint selection.")
@@ -114,7 +153,8 @@ def render_analysis(analysis: service.Analysis) -> None:
     elif analysis.status == "valid":
         st.info("The model found no laptop aspects in this review.")
 
-    st.caption(f"Analyzed in {analysis.seconds:.1f} s · {analysis.generated_tokens} tokens generated")
+    server = f" ({analysis.server_seconds:.1f} s on the server)" if analysis.server_seconds is not None else ""
+    st.caption(f"Analyzed in {analysis.seconds:.1f} s{server} · {analysis.generated_tokens} tokens generated")
     with st.expander("Raw model output", expanded=analysis.status != "valid"):
         st.code(analysis.raw_response or "(empty response)", language="json")
         st.caption(f"Parse status: {analysis.status} · prompt version {analysis.prompt_version}")
@@ -130,15 +170,17 @@ st.markdown(
     "**positive**, **negative**, **neutral** or **conflict**."
 )
 
-runtime, adapter_error = None, None
+runtime, settings, setup_error = None, None, None
 try:
-    runtime = service.resolve_runtime()
-    service.check_adapter(runtime.adapter_path)
+    settings = remote.remote_settings()
+    if settings is None:
+        runtime = service.resolve_runtime()
+        service.check_adapter(runtime.adapter_path)
 except service.AppError as error:
-    adapter_error = str(error)
+    setup_error = str(error)
 except Exception as error:  # e.g. PyTorch missing or broken
-    adapter_error = service.describe_error(error, service.Runtime(service.adapter_path(), "cpu", ""))
-render_sidebar(runtime, adapter_error)
+    setup_error = service.describe_error(error, None)
+render_sidebar(runtime, settings, setup_error)
 
 st.text_area(
     "Laptop review",
@@ -152,27 +194,28 @@ example_column, clear_column, _ = st.columns([1.3, 1, 3])
 example_column.button("Try an example", on_click=load_example, width="stretch")
 clear_column.button("Clear", on_click=clear_review, width="stretch")
 
-if adapter_error:
-    st.error("The model is not available: " + adapter_error)
+if setup_error:
+    st.error("The model is not available: " + setup_error)
 
-if st.button("Analyze Review", type="primary", disabled=adapter_error is not None, width="stretch"):
+if st.button("Analyze Review", type="primary", disabled=setup_error is not None, width="stretch"):
     try:
         review = service.validate_review(st.session_state.get("review"))
     except service.AppError as error:
         st.warning(str(error))
     else:
         try:
-            with st.spinner("Loading the model. The first run downloads about 6 GB and can take several minutes..."):
-                predictor = get_predictor(str(runtime.adapter_path), runtime.device)
+            if settings is not None:
+                predictor, where = get_remote_predictor(settings), f"the remote GPU ({settings.host})"
+            else:
+                with st.spinner("Loading the model. The first run downloads about 6 GB and can take several minutes..."):
+                    predictor = get_predictor(str(runtime.adapter_path), runtime.device)
+                where = runtime.device.upper()
+            with st.spinner(f"Analyzing review on {where}..."):
+                st.session_state.analysis = service.analyze(predictor, review)
         except Exception as error:
+            # No fallback: a remote failure is reported, never retried on the local CPU.
+            st.session_state.pop("analysis", None)
             show_error(service.describe_error(error, runtime), error)
-        else:
-            try:
-                with st.spinner(f"Analyzing review on {runtime.device.upper()}..."):
-                    st.session_state.analysis = service.analyze(predictor, review)
-            except Exception as error:
-                st.session_state.pop("analysis", None)
-                show_error(service.describe_error(error, runtime), error)
 
 if "analysis" in st.session_state:
     render_analysis(st.session_state.analysis)

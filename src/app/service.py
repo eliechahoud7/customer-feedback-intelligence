@@ -86,6 +86,8 @@ class Analysis:
     seconds: float
     prompt_version: str = PROMPT_VERSION
     segments: list[tuple[str, str | None]] = field(default_factory=list)
+    # Model time reported by a remote inference API (``seconds`` includes the network).
+    server_seconds: float | None = None
 
 
 def adapter_path(environ: Mapping[str, str] = os.environ) -> Path:
@@ -143,9 +145,9 @@ def choose_device(requested: str, cuda_memory_gb: Callable[[], float | None]) ->
 
 def resolve_runtime(
     environ: Mapping[str, str] = os.environ,
-    cuda_memory_gb: Callable[[], float | None] = detect_cuda_memory_gb,
+    cuda_memory_gb: Callable[[], float | None] | None = None,
 ) -> Runtime:
-    device, reason = choose_device(environ.get(DEVICE_ENV, "auto"), cuda_memory_gb)
+    device, reason = choose_device(environ.get(DEVICE_ENV, "auto"), cuda_memory_gb or detect_cuda_memory_gb)
     return Runtime(adapter_path(environ), device, reason)
 
 
@@ -170,7 +172,7 @@ def load_predictor(path: Path, device: str) -> AbsaPredictor:
     )
 
 
-def describe_error(error: BaseException, runtime: Runtime) -> str:
+def describe_error(error: BaseException, runtime: Runtime | None) -> str:
     """A short, actionable message for a failure while loading or running the model."""
     if isinstance(error, AppError):
         return str(error)
@@ -179,7 +181,8 @@ def describe_error(error: BaseException, runtime: Runtime) -> str:
                 "Install the dependencies listed in the README into the project's .venv.")
     text = str(error)
     if isinstance(error, MemoryError) or "out of memory" in text.lower():
-        return (f"Not enough memory to run the model on {runtime.device.upper()}. "
+        device = runtime.device.upper() if runtime else "this machine"
+        return (f"Not enough memory to run the model on {device}. "
                 "Close other applications and retry, or set CFI_DEVICE=cpu if a small GPU was used.")
     if isinstance(error, OSError):
         return ("The base model could not be downloaded or read from the Hugging Face cache. "
@@ -262,4 +265,5 @@ def analyze(predictor: AbsaPredictor, text: str, clock: Callable[[], float] = ti
         seconds=seconds,
         prompt_version=prediction["prompt_version"],
         segments=highlight_segments(review, prediction["aspects"]),
+        server_seconds=prediction.get("server_seconds"),
     )
