@@ -129,7 +129,7 @@ def test_health_uses_get_and_a_short_timeout():
 @pytest.mark.parametrize(
     "outcome, message",
     [
-        (requests.ConnectionError("refused"), "Cannot reach the inference API at abc.trycloudflare.com"),
+        (requests.ConnectionError("refused"), "Cannot reach the inference API. The Colab session"),
         (requests.Timeout("slow"), "did not answer within 120 s"),
         (FakeResponse(401, {"detail": "Missing or invalid API token."}), "rejected the token"),
         (FakeResponse(503, {"detail": "The model is still loading; retry shortly."}), "still loading"),
@@ -156,6 +156,15 @@ def test_errors_never_contain_the_token():
         with pytest.raises(AppError) as error:
             RemotePredictor(SETTINGS, FakeSession(outcome)).predict([record()])
         assert TOKEN not in str(error.value)
+
+
+def test_errors_never_show_the_api_host():
+    outcomes = (requests.ConnectionError("refused"), requests.Timeout("slow"), FakeResponse(530, None, "<html>"),
+                FakeResponse(200, None, "<html>"))
+    for outcome in outcomes:
+        with pytest.raises(AppError) as error:
+            RemotePredictor(SETTINGS, FakeSession(outcome)).predict([record()])
+        assert "trycloudflare" not in str(error.value)
 
 
 # --- the real API, in-process ------------------------------------------------------------

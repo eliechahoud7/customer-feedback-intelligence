@@ -104,10 +104,10 @@ class RemotePredictor:
         try:
             response = self.session.request(method, url, headers=headers, timeout=timeout, **kwargs)
         except requests.Timeout as error:
-            raise AppError(f"The inference API at {self.settings.host} did not answer within {timeout} s.") from error
+            raise AppError(f"The inference API did not answer within {timeout} s.") from error
         except requests.RequestException as error:
             raise AppError(
-                f"Cannot reach the inference API at {self.settings.host}. The Colab session may have stopped or the "
+                "Cannot reach the inference API. The Colab session may have stopped or the "
                 f"tunnel URL may have changed: restart the service and update {URL_ENV}."
             ) from error
 
@@ -115,7 +115,7 @@ class RemotePredictor:
             try:
                 return response.json()
             except ValueError as error:
-                raise AppError(f"The inference API at {self.settings.host} returned a non-JSON response.") from error
+                raise AppError("The inference API returned a non-JSON response.") from error
         raise AppError(self._error_message(response))
 
     def _error_message(self, response) -> str:
@@ -128,7 +128,7 @@ class RemotePredictor:
         if code == 503 and detail:
             return detail  # model loading or failed to load
         if code in (502, 503, 504, 530) or detail is None:
-            return (f"The inference API at {self.settings.host} is unavailable (HTTP {code}). The Colab session or "
+            return (f"The inference API is unavailable (HTTP {code}). The Colab session or "
                     f"tunnel has probably stopped: restart the service and update {URL_ENV}.")
         return f"The inference API failed (HTTP {code}): {detail}"
 

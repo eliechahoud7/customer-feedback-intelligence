@@ -106,14 +106,13 @@ def show_error(message: str, error: BaseException) -> None:
 
 
 def render_remote_status(settings: remote.RemoteSettings) -> None:
-    st.markdown(f"**Runs on:** remote inference API  \n`{settings.host}`")
+    st.markdown("**Runs on:** Remote inference API")
     health, error = remote_health(settings)
     if error:
         st.warning(error)
     elif health["status"] == "ready":
-        st.success(f"Model ready on {health.get('gpu') or health.get('model_device')} ({health.get('precision')})")
-        st.caption(f"Adapter `{health.get('adapter')}` on `{health.get('model_device')}`, "
-                   f"loaded in {health.get('load_seconds')} s.")
+        st.success(f"Model ready on {health.get('gpu') or 'a CUDA GPU'} ({health.get('precision')})")
+        st.caption("Fine-tuned adapter loaded successfully.")
     elif health["status"] == "loading":
         st.info("The remote model is still loading. This takes a few minutes after the service starts.")
     else:
@@ -224,7 +223,7 @@ if st.button("Analyze Review", type="primary", disabled=setup_error is not None,
     else:
         try:
             if settings is not None:
-                predictor, where = get_remote_predictor(settings), f"the remote GPU ({settings.host})"
+                predictor, where = get_remote_predictor(settings), "the remote GPU"
             else:
                 with st.spinner("Loading the model. The first run downloads about 6 GB and can take several minutes..."):
                     predictor = get_predictor(str(runtime.adapter_path), runtime.device)

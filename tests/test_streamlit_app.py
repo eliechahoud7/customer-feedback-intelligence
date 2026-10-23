@@ -169,9 +169,14 @@ def test_remote_mode_analyzes_on_the_api_and_never_loads_locally(remote_mode, lo
     app = run_app()
     assert not app.exception
     sidebar = " ".join(m.value for m in app.sidebar.markdown)
-    assert "remote inference API" in sidebar and "abc.trycloudflare.com" in sidebar
-    assert TOKEN not in sidebar
-    assert "Model ready on Tesla T4" in app.sidebar.success[0].value
+    assert "Runs on:** Remote inference API" in sidebar
+    assert "Qwen/Qwen2.5-3B-Instruct" in sidebar and "QLoRA" in sidebar and "85.55%" in sidebar
+    assert app.sidebar.success[0].value == "Model ready on Tesla T4 (CUDA GPU, 4-bit NF4)"
+    assert "Fine-tuned adapter loaded successfully." in [c.value for c in app.sidebar.caption]
+    # Implementation details stay off the page.
+    shown = " ".join(e.value for e in (*app.sidebar.markdown, *app.sidebar.caption, *app.sidebar.success))
+    for hidden in ("trycloudflare", TOKEN, "cuda:0", "95.0", "loaded in"):
+        assert hidden not in shown
 
     app.text_area(key="review").input(REVIEW)
     analyze_button(app).click().run()
@@ -182,18 +187,18 @@ def test_remote_mode_analyzes_on_the_api_and_never_loads_locally(remote_mode, lo
 
 
 def test_remote_failure_is_shown_without_falling_back_to_cpu(remote_mode, loads):
-    remote_mode(outcome=service.AppError("Cannot reach the inference API at abc.trycloudflare.com."))
+    remote_mode(outcome=service.AppError("Cannot reach the inference API."))
     app = run_app()
     app.text_area(key="review").input(REVIEW)
     analyze_button(app).click().run()
     assert not app.exception
-    assert app.error[0].value == "Cannot reach the inference API at abc.trycloudflare.com."
+    assert app.error[0].value == "Cannot reach the inference API."
     assert not app.metric
     assert loads == []
 
 
 def test_remote_status_problems_are_shown_in_the_sidebar(remote_mode):
-    remote_mode(health=service.AppError("The inference API at abc.trycloudflare.com is unavailable (HTTP 530)."))
+    remote_mode(health=service.AppError("The inference API is unavailable (HTTP 530)."))
     app = run_app()
     assert "unavailable (HTTP 530)" in app.sidebar.warning[0].value
     assert not analyze_button(app).disabled  # the user can retry once the service is back
@@ -253,7 +258,7 @@ def test_remote_settings_can_come_from_streamlit_secrets(no_local_model, monkeyp
     app.secrets["CFI_API_TOKEN"] = TOKEN
     app.run()
     assert not app.error
-    assert "secret-host.trycloudflare.com" in " ".join(m.value for m in app.sidebar.markdown)
+    assert "secret-host" not in " ".join(m.value for m in app.sidebar.markdown)
 
     app.text_area(key="review").input(REVIEW)
     analyze_button(app).click().run()
