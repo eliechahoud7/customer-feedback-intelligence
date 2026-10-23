@@ -1,32 +1,10 @@
-# Core deep learning
-# Install the CUDA build of PyTorch first, matching your GPU driver, e.g.:
-#   pip install torch --index-url https://download.pytorch.org/whl/cu124
-torch>=2.6
-
-# Hugging Face stack (model loading, LoRA adapters, supervised fine-tuning)
-# transformers and trl are pinned to the versions configs/train.yaml was
-# checked against: transformers 5 removed warmup_ratio (warmup_steps < 1 is a
-# ratio instead), and trl's SFTConfig must provide completion_only_loss and
-# max_length. src/modeling/train.py verifies both before loading the model.
-transformers==5.20.2
-peft>=0.13
-trl==1.16.0
-accelerate>=1.10.1
-bitsandbytes>=0.44
-datasets>=4.7.0
-
-# Data handling and evaluation (macro F1, confusion matrix, etc.)
-pandas>=2.2
-scikit-learn>=1.5
-pyyaml>=6.0
-
-# User interface
+# Streamlit app only. This is what Streamlit Community Cloud installs.
+# The model runs on the remote GPU inference API (src/serving/api.py), so no
+# PyTorch or Hugging Face libraries are needed here. For training, the
+# inference API or local inference, install requirements-ml.txt instead.
 streamlit>=1.39
-
-# Remote GPU inference API (src/serving) and the app's client for it
-fastapi>=0.115
-uvicorn>=0.30
+pandas>=2.2
 requests>=2.32
-
-# Testing
-pytest>=8.0
+# Imported by the shared data and evaluation modules the app reuses.
+pyyaml>=6.0
+scikit-learn>=1.5

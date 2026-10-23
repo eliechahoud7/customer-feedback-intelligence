@@ -239,7 +239,7 @@ def test_config_keys_are_accepted_by_pinned_sft_config():
 
 
 def test_fixture_matches_pinned_requirements():
-    requirements = (PROJECT_ROOT / "requirements.txt").read_text(encoding="utf-8").splitlines()
+    requirements = (PROJECT_ROOT / "requirements-ml.txt").read_text(encoding="utf-8").splitlines()
     assert f"transformers=={PINNED_FIELDS['transformers']}" in requirements
     assert f"trl=={PINNED_FIELDS['trl']}" in requirements
 

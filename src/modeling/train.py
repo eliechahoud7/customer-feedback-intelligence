@@ -128,7 +128,7 @@ def check_trl_support(sft_config_class, training: dict) -> None:
     if unsupported:
         raise RuntimeError(
             f"configs/train.yaml training keys not accepted by the installed SFTConfig: {unsupported}; "
-            "check the pinned trl/transformers versions in requirements.txt"
+            "check the pinned trl/transformers versions in requirements-ml.txt"
         )
 
 
@@ -138,7 +138,7 @@ def check_transformers_version(version: str, training: dict) -> None:
     if 0 < warmup < 1 and int(version.split(".")[0]) < 5:
         raise RuntimeError(
             f"warmup_steps={warmup} is a fraction of total steps only in transformers>=5 "
-            f"(installed {version}); install the versions pinned in requirements.txt"
+            f"(installed {version}); install the versions pinned in requirements-ml.txt"
         )
 
 

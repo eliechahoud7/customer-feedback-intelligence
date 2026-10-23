@@ -1,5 +1,5 @@
 {
- "_comment": "Dataclass fields accepted by trl.SFTConfig (TrainingArguments + _BaseConfig + SFTConfig), extracted from the source of the versions pinned in requirements.txt. Regenerate when the pins change.",
+ "_comment": "Dataclass fields accepted by trl.SFTConfig (TrainingArguments + _BaseConfig + SFTConfig), extracted from the source of the versions pinned in requirements-ml.txt. Regenerate when the pins change.",
  "transformers": "5.20.2",
  "trl": "1.16.0",
  "fields": [

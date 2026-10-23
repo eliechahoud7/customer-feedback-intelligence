@@ -1,0 +1,28 @@
+# Full environment: training (Colab), the GPU inference API, local inference
+# and the tests. Includes the Streamlit app's requirements.
+-r requirements.txt
+
+# Core deep learning
+# Install the CUDA build of PyTorch first, matching your GPU driver, e.g.:
+#   pip install torch --index-url https://download.pytorch.org/whl/cu124
+# (or the CPU build: --index-url https://download.pytorch.org/whl/cpu)
+torch>=2.6
+
+# Hugging Face stack (model loading, LoRA adapters, supervised fine-tuning)
+# transformers and trl are pinned to the versions configs/train.yaml was
+# checked against: transformers 5 removed warmup_ratio (warmup_steps < 1 is a
+# ratio instead), and trl's SFTConfig must provide completion_only_loss and
+# max_length. src/modeling/train.py verifies both before loading the model.
+transformers==5.20.2
+peft>=0.13
+trl==1.16.0
+accelerate>=1.10.1
+bitsandbytes>=0.44
+datasets>=4.7.0
+
+# Remote GPU inference API (src/serving)
+fastapi>=0.115
+uvicorn>=0.30
+
+# Testing
+pytest>=8.0

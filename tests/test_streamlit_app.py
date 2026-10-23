@@ -28,6 +28,7 @@ def adapter(tmp_path, monkeypatch):
     (directory / "adapter_model.safetensors").write_bytes(b"weights")
     monkeypatch.setenv("CFI_ADAPTER_PATH", str(directory))
     monkeypatch.setenv("CFI_DEVICE", "cpu")
+    monkeypatch.setenv("CFI_INFERENCE_MODE", "local")
     monkeypatch.delenv("CFI_API_URL", raising=False)
     monkeypatch.delenv("CFI_API_TOKEN", raising=False)
     st.cache_resource.clear()
@@ -152,6 +153,7 @@ class FakeRemote:
 def remote_mode(adapter, loads, monkeypatch):
     from src.app import remote
 
+    monkeypatch.delenv("CFI_INFERENCE_MODE")
     monkeypatch.setenv("CFI_API_URL", "https://abc.trycloudflare.com")
     monkeypatch.setenv("CFI_API_TOKEN", TOKEN)
     FakeRemote.instances = []
@@ -212,6 +214,56 @@ def test_remote_mode_without_a_token_is_a_setup_error(remote_mode, monkeypatch):
 def test_missing_adapter_disables_analysis(tmp_path, monkeypatch, loads):
     monkeypatch.setenv("CFI_ADAPTER_PATH", str(tmp_path / "nowhere"))
     monkeypatch.setenv("CFI_DEVICE", "cpu")
+    monkeypatch.setenv("CFI_INFERENCE_MODE", "local")
     app = run_app()
     assert any("Adapter folder not found" in e.value for e in app.error)
+    assert analyze_button(app).disabled
+
+
+# --- deployment defaults ------------------------------------------------------------------
+
+
+@pytest.fixture
+def no_local_model(adapter, loads, monkeypatch):
+    """Remote mode by default; fail loudly if anything tries to set up local inference."""
+    monkeypatch.delenv("CFI_INFERENCE_MODE")
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("local inference was attempted")
+
+    monkeypatch.setattr(service, "resolve_runtime", forbidden)
+    monkeypatch.setattr(service, "detect_cuda_memory_gb", forbidden)
+    return loads
+
+
+def test_without_remote_configuration_the_app_starts_but_never_runs_locally(no_local_model):
+    app = run_app()
+    assert not app.exception
+    assert any("Remote GPU inference is not configured" in e.value for e in app.error)
+    assert analyze_button(app).disabled
+    assert no_local_model == []
+
+
+def test_remote_settings_can_come_from_streamlit_secrets(no_local_model, monkeypatch):
+    from src.app import remote
+
+    monkeypatch.setattr(remote, "RemotePredictor", lambda settings: FakeRemote(settings))
+    app = AppTest.from_file(APP, default_timeout=30)
+    app.secrets["CFI_API_URL"] = "https://secret-host.trycloudflare.com"
+    app.secrets["CFI_API_TOKEN"] = TOKEN
+    app.run()
+    assert not app.error
+    assert "secret-host.trycloudflare.com" in " ".join(m.value for m in app.sidebar.markdown)
+
+    app.text_area(key="review").input(REVIEW)
+    analyze_button(app).click().run()
+    assert {m.label: m.value for m in app.metric}["🔴 Negative"] == "1"
+    assert FakeRemote.instances[-1].settings.token == TOKEN
+    assert no_local_model == []
+
+
+def test_unknown_inference_mode_is_a_setup_error(no_local_model, monkeypatch):
+    monkeypatch.setenv("CFI_INFERENCE_MODE", "cpu")
+    app = run_app()
+    assert any("CFI_INFERENCE_MODE must be one of remote, local" in e.value for e in app.error)
     assert analyze_button(app).disabled

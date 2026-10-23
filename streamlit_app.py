@@ -6,18 +6,22 @@ Run from the project root:
 Model loading, prompting and parsing live in src/app/service.py and the
 modules it reuses; this file only lays out the page.
 
-With CFI_API_URL and CFI_API_TOKEN set, reviews are sent to the GPU inference
-API (src/serving/api.py) instead of a local model. If the API fails, the app
-shows the error; it never falls back to local CPU inference.
+By default reviews are sent to the GPU inference API (src/serving/api.py)
+configured by CFI_API_URL and CFI_API_TOKEN, read from environment variables
+or Streamlit secrets. If the API is not configured or fails, the app shows the
+error; it never falls back to local CPU inference. Local inference runs only
+with CFI_INFERENCE_MODE=local.
 """
 
 from __future__ import annotations
 
 import html
+import os
 import traceback
 
 import pandas as pd
 import streamlit as st
+from streamlit.errors import StreamlitAPIException
 
 from src.app import remote, service
 
@@ -30,6 +34,19 @@ SENTIMENT_COLORS = {
     "conflict": "#bf8700",
 }
 SENTIMENT_ICONS = {"positive": "🟢", "negative": "🔴", "neutral": "⚪", "conflict": "🟠"}
+CONFIG_KEYS = (service.MODE_ENV, remote.URL_ENV, remote.TOKEN_ENV, service.ADAPTER_ENV, service.DEVICE_ENV)
+
+
+def app_config() -> dict[str, str]:
+    """Environment variables, completed from Streamlit secrets (e.g. on Community Cloud)."""
+    config = dict(os.environ)
+    try:
+        for key in CONFIG_KEYS:
+            if not config.get(key) and key in st.secrets:
+                config[key] = str(st.secrets[key])
+    except (FileNotFoundError, StreamlitAPIException):
+        pass  # no (readable) secrets.toml: environment variables only
+    return config
 
 
 @st.cache_resource(show_spinner=False)
@@ -172,9 +189,11 @@ st.markdown(
 
 runtime, settings, setup_error = None, None, None
 try:
-    settings = remote.remote_settings()
-    if settings is None:
-        runtime = service.resolve_runtime()
+    config = app_config()
+    if service.inference_mode(config) == "remote":
+        settings = remote.require_remote_settings(config)
+    else:
+        runtime = service.resolve_runtime(config)
         service.check_adapter(runtime.adapter_path)
 except service.AppError as error:
     setup_error = str(error)

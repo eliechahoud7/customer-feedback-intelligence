@@ -4,10 +4,14 @@ The app reuses ``AbsaPredictor`` for prompting, generation and parsing; this
 module only decides where the model runs, checks the adapter and the input,
 and turns one prediction into rows, counts and warnings for display.
 
-Configuration (environment variables):
-    CFI_ADAPTER_PATH  LoRA adapter directory (default: models/checkpoint-195,
-                      relative paths are resolved against the project root)
-    CFI_DEVICE        auto (default), cpu or cuda
+Configuration (environment variables or Streamlit secrets):
+    CFI_INFERENCE_MODE  remote (default): use the GPU inference API configured
+                        by CFI_API_URL and CFI_API_TOKEN (src/app/remote.py);
+                        local: load the model on this machine (opt-in, slow
+                        on CPU, needs requirements-ml.txt)
+    CFI_ADAPTER_PATH    local mode: LoRA adapter directory (default:
+                        models/checkpoint-195, relative to the project root)
+    CFI_DEVICE          local mode: auto (default), cpu or cuda
 
 On ``auto`` the model runs 4-bit on a CUDA GPU with enough memory, and
 otherwise on CPU in bfloat16 without quantization. The chosen device and the
@@ -29,6 +33,8 @@ from src.data.prepare_dataset import LABELS, PROJECT_ROOT, review_id
 from src.data.prompts import PROMPT_VERSION
 from src.modeling.inference import DEFAULT_MODEL, AbsaPredictor
 
+MODE_ENV = "CFI_INFERENCE_MODE"
+MODES = ("remote", "local")
 ADAPTER_ENV = "CFI_ADAPTER_PATH"
 DEVICE_ENV = "CFI_DEVICE"
 DEFAULT_ADAPTER = Path("models") / "checkpoint-195"
@@ -88,6 +94,14 @@ class Analysis:
     segments: list[tuple[str, str | None]] = field(default_factory=list)
     # Model time reported by a remote inference API (``seconds`` includes the network).
     server_seconds: float | None = None
+
+
+def inference_mode(environ: Mapping[str, str] = os.environ) -> str:
+    """remote unless local inference is requested explicitly; never chosen as a fallback."""
+    mode = environ.get(MODE_ENV, "").strip().lower() or "remote"
+    if mode not in MODES:
+        raise AppError(f"{MODE_ENV} must be one of {', '.join(MODES)}, not {mode!r}.")
+    return mode
 
 
 def adapter_path(environ: Mapping[str, str] = os.environ) -> Path:

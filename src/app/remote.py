@@ -61,6 +61,17 @@ def remote_settings(environ: Mapping[str, str] = os.environ) -> RemoteSettings |
     return RemoteSettings(url, token)
 
 
+def require_remote_settings(environ: Mapping[str, str] = os.environ) -> RemoteSettings:
+    settings = remote_settings(environ)
+    if settings is None:
+        raise AppError(
+            f"Remote GPU inference is not configured. Set {URL_ENV} and {TOKEN_ENV} "
+            "(on Streamlit Community Cloud: app settings > Secrets). To run the model on this "
+            "machine instead, set CFI_INFERENCE_MODE=local."
+        )
+    return settings
+
+
 class RemotePredictor:
     def __init__(self, settings: RemoteSettings, session=None):
         self.settings = settings

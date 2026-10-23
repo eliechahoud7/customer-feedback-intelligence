@@ -46,6 +46,14 @@ def fake_clock(*times):
 # --- configuration -----------------------------------------------------------
 
 
+def test_inference_is_remote_unless_local_is_requested():
+    assert service.inference_mode({}) == "remote"
+    assert service.inference_mode({"CFI_INFERENCE_MODE": " Local "}) == "local"
+    assert service.inference_mode({"CFI_INFERENCE_MODE": "remote"}) == "remote"
+    with pytest.raises(AppError, match="must be one of remote, local"):
+        service.inference_mode({"CFI_INFERENCE_MODE": "cpu"})
+
+
 def test_adapter_path_defaults_to_project_models_folder():
     assert service.adapter_path({}) == PROJECT_ROOT / "models" / "checkpoint-195"
     assert service.adapter_path({"CFI_ADAPTER_PATH": "   "}) == PROJECT_ROOT / "models" / "checkpoint-195"

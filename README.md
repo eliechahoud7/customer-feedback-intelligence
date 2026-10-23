@@ -45,7 +45,9 @@ customer-feedback-intelligence/
 ├── configs/          # YAML configs for data, training hyperparameters, evaluation
 ├── models/           # Local copy of the trained LoRA adapter (git-ignored)
 ├── streamlit_app.py  # Streamlit user interface
-├── requirements.txt
+├── .streamlit/       # secrets.toml.example (the real secrets.toml is git-ignored)
+├── requirements.txt  # Streamlit app only (what Community Cloud installs)
+├── requirements-ml.txt  # + training, inference API, local inference, tests
 └── README.md
 ```
 
@@ -152,7 +154,7 @@ The same steps as commands:
 
 ```bash
 git clone https://github.com/eliechahoud7/customer-feedback-intelligence.git && cd customer-feedback-intelligence
-pip install -r requirements.txt               # Colab's preinstalled CUDA PyTorch already satisfies torch
+pip install -r requirements-ml.txt            # Colab's preinstalled CUDA PyTorch already satisfies torch
 python -m src.data.build_sft_dataset          # SFT files are generated, not committed
 python -m src.modeling.train --check-data     # verify data + real token lengths, no training
 python -m src.modeling.train --max-steps 5    # smoke run (outputs/...-smoke)
@@ -223,6 +225,13 @@ As a sanity check, scoring the reference answers on validation gives 1.0 for eve
 
 `streamlit_app.py` analyzes one review at a time. It shows the review with each aspect highlighted, a table of aspects and sentiments, counts for the four labels, and the raw model output when the answer is not valid. It reuses `AbsaPredictor` and the shared prompt and parser; `src/app/service.py` holds the rest of the logic (configuration, input checks, warnings) and is unit-tested without a model. The model is loaded once per process (`st.cache_resource`) and reused for every click.
 
+| `CFI_INFERENCE_MODE` | Behavior |
+|---|---|
+| `remote` (default) | Sends reviews to the GPU inference API set by `CFI_API_URL` and `CFI_API_TOKEN` (see [Remote GPU inference](#remote-gpu-inference-colab)). If they are missing, the app shows a setup error. |
+| `local` | Loads the model on this machine. Opt-in only; needs `requirements-ml.txt` and the adapter, and is slow on CPU. |
+
+The app never switches from remote to local by itself. Settings are read from environment variables, or from Streamlit secrets (`.streamlit/secrets.toml` locally, *Secrets* on Community Cloud).
+
 Held-out test results of the fine-tuned adapter (`checkpoint-195`, 222 test reviews), shown in the app's sidebar:
 
 | Metric | Fine-tuned |
@@ -233,7 +242,7 @@ Held-out test results of the fine-tuned adapter (`checkpoint-195`, 222 test revi
 | Sentiment macro F1 | 79.95% |
 | Valid structured responses | 222/222 |
 
-### Where the model runs
+### Where the model runs (local mode)
 
 | `CFI_DEVICE` | Behavior |
 |---|---|
@@ -243,7 +252,7 @@ Held-out test results of the fine-tuned adapter (`checkpoint-195`, 222 test revi
 
 The sidebar shows the device that was chosen and why. On CPU the bfloat16 weights alone take about 6 GB of RAM. On a laptop i7-1165G7 with 16 GB, a short review took about 30–40 s, and loading the cached model took between under a minute and a few minutes. A 2 GB laptop GPU (e.g. MX450) is too small for the 3B model even in 4-bit, so `auto` uses the CPU there.
 
-### Windows setup (CPU)
+### Windows setup (local CPU mode)
 
 From the project folder in PowerShell:
 
@@ -253,7 +262,7 @@ python -m venv .venv
 
 # CPU build of PyTorch (smaller download; the CUDA build is only useful with a large GPU)
 pip install torch --index-url https://download.pytorch.org/whl/cpu
-pip install -r requirements.txt
+pip install -r requirements-ml.txt
 ```
 
 ### Adapter location
@@ -278,6 +287,7 @@ The app checks that the folder contains both files and that `adapter_config.json
 
 ```powershell
 .venv\Scripts\Activate.ps1
+$env:CFI_INFERENCE_MODE = "local"
 streamlit run streamlit_app.py
 ```
 
@@ -300,7 +310,7 @@ Streamlit (Windows) --HTTPS + bearer token--> Cloudflare quick tunnel --> FastAP
   - The service refuses to start without a `CFI_API_TOKEN` of at least 32 characters, and compares tokens in constant time.
   - It listens on `127.0.0.1` only, and has no interactive docs.
   - The app refuses `http://` for any host other than localhost, so the token is never sent in clear text.
-- **No silent fallback.** When `CFI_API_URL` is set, the app only uses the API. If the API fails, the app shows the error and does not fall back to slow CPU inference. Remove `CFI_API_URL` to use local inference again.
+- **No silent fallback.** In the default remote mode the app only uses the API. If the API is not configured or fails, the app shows the error and does not fall back to slow CPU inference. Local inference runs only with `CFI_INFERENCE_MODE=local`.
 
 ### 1. Create a token
 
@@ -317,7 +327,7 @@ Add it as a Colab secret named `CFI_API_TOKEN`, using the key icon and enabling 
 Open `notebooks/colab_inference_api.ipynb` in Colab and choose *Runtime > Change runtime type > T4 GPU*. Then *Run all*. The notebook:
 
 1. mounts Drive and checks the adapter at `MyDrive/customer-feedback-intelligence/outputs/qwen2.5-3b-absa-qlora/checkpoint-195/`;
-2. installs `requirements.txt`, and asks for a restart only if a model library changed;
+2. installs `requirements-ml.txt`, and asks for a restart only if a model library changed;
 3. starts the API with `CFI_DEVICE=cuda`, so it fails clearly instead of loading on CPU, then waits until `/health` reports `ready` and prints the GPU and timings;
 4. starts a Cloudflare quick tunnel and prints `CFI_API_URL = https://<name>.trycloudflare.com`;
 5. checks through the tunnel that requests with the token succeed and requests without it get `401`;
@@ -333,7 +343,7 @@ $env:CFI_API_TOKEN = "<the same token as the Colab secret>"
 streamlit run streamlit_app.py
 ```
 
-Set the variables in the terminal session rather than with `setx`, so the token is not stored permanently. The sidebar should say **Runs on: remote inference API** and **Model ready on Tesla T4 (CUDA GPU, 4-bit NF4)**, with the model device `cuda:0`. Each result shows its total time and the time spent on the server.
+Set the variables in the terminal session rather than with `setx`, so the token is not stored permanently. Alternatively, copy `.streamlit/secrets.toml.example` to `.streamlit/secrets.toml` (git-ignored) and fill in both values. For the remote mode alone, `pip install -r requirements.txt` is enough. The sidebar should say **Runs on: remote inference API** and **Model ready on Tesla T4 (CUDA GPU, 4-bit NF4)**, with the model device `cuda:0`. Each result shows its total time and the time spent on the server.
 
 To measure latency from your PC, including the tunnel:
 
@@ -361,6 +371,34 @@ Colab stops idle sessions and limits session length. When the session or the tun
   - about 19 s of that was prompt prefill (243 prompt tokens), and each output token took about 0.35 s.
 - **Remote GPU: not measured yet.** The service reports its own warm-up split (prefill time against time per generated token) in `/health`, and the benchmark reports first and later requests. Use those numbers to decide whether further optimizations, such as caching the fixed system prompt, are worth adding.
 
+## Deploy on Streamlit Community Cloud
+
+Community Cloud runs only the Streamlit interface. Its machines have no GPU and little memory, so the model keeps running on the Colab inference API, and the deployed app talks to it in remote mode.
+
+**Ready in the repository**
+
+- `requirements.txt` holds only the app's dependencies (Streamlit, pandas, requests, PyYAML, scikit-learn). Community Cloud installs this file, so no PyTorch or model libraries are installed.
+- Remote mode is the default. Without `CFI_API_URL` and `CFI_API_TOKEN` the app starts, shows a setup error and disables analysis. It never loads the model.
+- Settings can come from Streamlit secrets as well as environment variables.
+- `models/`, `*.safetensors`, `.env*` and `.streamlit/secrets.toml` are git-ignored.
+
+**Deploy**
+
+1. Push the repository to GitHub. At [share.streamlit.io](https://share.streamlit.io), choose *Create app*, then select `eliechahoud7/customer-feedback-intelligence`, branch `main`, and main file `streamlit_app.py`.
+2. Under *Advanced settings*, choose Python 3.11 or 3.12. Paste the secrets in TOML format (see `.streamlit/secrets.toml.example`):
+   ```toml
+   CFI_API_URL = "https://<name>.trycloudflare.com"
+   CFI_API_TOKEN = "<the same token as the Colab secret>"
+   ```
+3. Deploy. The sidebar should say **Model ready on Tesla T4** while the Colab service is running.
+
+**Keeping it working**
+
+- The deployed app works only while the Colab notebook is running.
+- A quick-tunnel URL changes on every restart. When it does, update `CFI_API_URL` under the app's *Settings > Secrets*; the app picks up the new value automatically.
+- For a stable URL, use a named Cloudflare tunnel or another always-on GPU host.
+- Because the repository is private, Community Cloud asks for access to it, and the app is private to the viewers you invite. Check the current plan limits on private apps.
+
 ## Setup
 
 ```bash
@@ -370,9 +408,13 @@ python -m venv .venv
 # macOS / Linux
 source .venv/bin/activate
 
-# Install the CUDA build of PyTorch matching your driver first, e.g.:
-pip install torch --index-url https://download.pytorch.org/whl/cu124
+# Streamlit app with remote inference only:
 pip install -r requirements.txt
+
+# Training, inference API, local inference and tests: install the CUDA build of
+# PyTorch matching your driver first, e.g.
+pip install torch --index-url https://download.pytorch.org/whl/cu124
+pip install -r requirements-ml.txt
 ```
 
 A CUDA-capable NVIDIA GPU is required for QLoRA training (bitsandbytes 4-bit quantization).

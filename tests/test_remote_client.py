@@ -82,6 +82,12 @@ def test_unsafe_or_incomplete_settings_are_rejected(environ, message):
         remote.remote_settings(environ)
 
 
+def test_missing_remote_configuration_explains_how_to_fix_it():
+    with pytest.raises(AppError, match="Remote GPU inference is not configured.*CFI_INFERENCE_MODE=local"):
+        remote.require_remote_settings({})
+    assert remote.require_remote_settings({"CFI_API_URL": URL, "CFI_API_TOKEN": TOKEN}) == SETTINGS
+
+
 def test_plain_http_is_allowed_only_for_localhost():
     for url in ("http://127.0.0.1:8000", "http://localhost:8000"):
         assert remote.remote_settings({"CFI_API_URL": url, "CFI_API_TOKEN": TOKEN}).url == url
