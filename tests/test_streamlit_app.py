@@ -159,7 +159,7 @@ def remote_mode(adapter, loads, monkeypatch):
     FakeRemote.instances = []
 
     def use(outcome=None, health=READY):
-        monkeypatch.setattr(remote, "RemotePredictor", lambda settings: FakeRemote(settings, outcome, health))
+        monkeypatch.setattr(remote, "RemotePredictor", lambda settings, session=None: FakeRemote(settings, outcome, health))
 
     use()
     return use
@@ -200,6 +200,7 @@ def test_remote_failure_is_shown_without_falling_back_to_cpu(remote_mode, loads)
 def test_remote_status_problems_are_shown_in_the_sidebar(remote_mode):
     remote_mode(health=service.AppError("The inference API is unavailable (HTTP 530)."))
     app = run_app()
+    assert app.sidebar.warning[0].value.startswith("Remote inference API unavailable.")
     assert "unavailable (HTTP 530)" in app.sidebar.warning[0].value
     assert not analyze_button(app).disabled  # the user can retry once the service is back
 
@@ -207,6 +208,39 @@ def test_remote_status_problems_are_shown_in_the_sidebar(remote_mode):
     st.cache_resource.clear()
     remote_mode(health={"status": "loading"})
     assert "still loading" in run_app().sidebar.info[0].value
+
+
+def test_unexpected_status_errors_are_a_warning_not_a_crash(remote_mode):
+    remote_mode(health=TypeError("bad payload"))
+    app = run_app()
+    assert not app.exception
+    assert "Unexpected error while checking the API (TypeError)" in app.sidebar.warning[0].value
+    assert not analyze_button(app).disabled
+
+
+def test_unreachable_api_after_a_code_reload_does_not_crash(adapter, monkeypatch):
+    """Streamlit re-imports src.* after a deploy; the page must still catch the new AppError."""
+    import sys
+
+    monkeypatch.delenv("CFI_INFERENCE_MODE")
+    monkeypatch.setenv("CFI_API_URL", "http://127.0.0.1:9")  # nothing listens on port 9
+    monkeypatch.setenv("CFI_API_TOKEN", TOKEN)
+    app = run_app()
+    assert "Cannot reach the inference API" in app.sidebar.warning[0].value
+
+    # What Streamlit's LocalSourcesWatcher does; monkeypatch restores the modules afterwards.
+    for name in [m for m in sys.modules if m == "src" or m.startswith("src.")]:
+        monkeypatch.delitem(sys.modules, name)
+    st.cache_data.clear()
+    app = run_app()
+    assert not app.exception
+    assert "Cannot reach the inference API" in app.sidebar.warning[0].value
+
+    app.text_area(key="review").input(REVIEW)
+    analyze_button(app).click().run()
+    assert not app.exception
+    assert app.error[0].value.startswith("Cannot reach the inference API")
+    assert not any(e.label == "Technical details" for e in app.expander)
 
 
 def test_remote_mode_without_a_token_is_a_setup_error(remote_mode, monkeypatch):
@@ -252,7 +286,7 @@ def test_without_remote_configuration_the_app_starts_but_never_runs_locally(no_l
 def test_remote_settings_can_come_from_streamlit_secrets(no_local_model, monkeypatch):
     from src.app import remote
 
-    monkeypatch.setattr(remote, "RemotePredictor", lambda settings: FakeRemote(settings))
+    monkeypatch.setattr(remote, "RemotePredictor", lambda settings, session=None: FakeRemote(settings))
     app = AppTest.from_file(APP, default_timeout=30)
     app.secrets["CFI_API_URL"] = "https://secret-host.trycloudflare.com"
     app.secrets["CFI_API_TOKEN"] = TOKEN

@@ -20,6 +20,7 @@ import os
 import traceback
 
 import pandas as pd
+import requests
 import streamlit as st
 from streamlit.errors import StreamlitAPIException
 
@@ -58,9 +59,16 @@ def get_predictor(adapter_path: str, device: str):
 
 
 @st.cache_resource(show_spinner=False)
+def http_session() -> requests.Session:
+    """One connection pool, shared by every session and rerun."""
+    return requests.Session()
+
+
 def get_remote_predictor(settings: remote.RemoteSettings):
-    """One HTTP client (and connection pool) per API URL and token."""
-    return remote.RemotePredictor(settings)
+    # Deliberately not cached: after a code update Streamlit re-imports src.app, and a
+    # cached predictor would keep raising the old AppError class, which the new code
+    # no longer catches.
+    return remote.RemotePredictor(settings, http_session())
 
 
 @st.cache_data(ttl=15, show_spinner=False)
@@ -69,6 +77,8 @@ def remote_health(settings: remote.RemoteSettings) -> tuple[dict | None, str | N
         return get_remote_predictor(settings).health(), None
     except service.AppError as error:
         return None, str(error)
+    except Exception as error:  # a status check must never take down the page
+        return None, f"Unexpected error while checking the API ({type(error).__name__})."
 
 
 def load_example() -> None:
@@ -109,11 +119,11 @@ def render_remote_status(settings: remote.RemoteSettings) -> None:
     st.markdown("**Runs on:** Remote inference API")
     health, error = remote_health(settings)
     if error:
-        st.warning(error)
-    elif health["status"] == "ready":
+        st.warning(f"Remote inference API unavailable. {error}")
+    elif health.get("status") == "ready":
         st.success(f"Model ready on {health.get('gpu') or 'a CUDA GPU'} ({health.get('precision')})")
         st.caption("Fine-tuned adapter loaded successfully.")
-    elif health["status"] == "loading":
+    elif health.get("status") == "loading":
         st.info("The remote model is still loading. This takes a few minutes after the service starts.")
     else:
         st.error(f"The remote model failed to load: {health.get('error')}")
