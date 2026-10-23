@@ -179,12 +179,7 @@ def render_analysis(analysis: service.Analysis) -> None:
 
 
 st.title("Customer Feedback Intelligence")
-st.markdown(
-    "Aspect-based sentiment analysis for laptop reviews. A fine-tuned "
-    "**Qwen2.5-3B-Instruct** model finds the product aspects a review mentions "
-    "(battery, screen, support, ...) and classifies the sentiment toward each one as "
-    "**positive**, **negative**, **neutral** or **conflict**."
-)
+st.markdown("Share your experience. Discover the sentiment behind every review.")
 
 runtime, settings, setup_error = None, None, None
 try:
