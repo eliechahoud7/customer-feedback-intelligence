@@ -54,11 +54,11 @@ It is **not a continuously available demo**. The model runs on a free GPU notebo
 
 ### Prediction results
 
-![Customer feedback aspect-based sentiment analysis results](docs/images/prediction-results.png)
+![Results for a laptop review: four aspects highlighted in the text, sentiment counts, per-aspect table and the raw model output](docs/images/prediction-results-cropped.png)
 
 ### Review input
 
-![Customer Feedback Intelligence dashboard](docs/images/dashboard.png)
+![Review input screen of the Customer Feedback Intelligence app](docs/images/review-input-cropped.png)
 
 ## Features and engineering highlights
 
@@ -117,6 +117,8 @@ Training, the baseline, evaluation, the API and the app all import the **same pr
 ## Dataset
 
 **Source:** [`tomaarsen/setfit-absa-semeval-laptops`](https://huggingface.co/datasets/tomaarsen/setfit-absa-semeval-laptops), a Hugging Face version of the **SemEval-2014 Task 4 laptop reviews**. Each row is one aspect annotation (`text`, `span`, `label`, `ordinal`).
+
+**Citation:** Maria Pontiki, Dimitris Galanis, John Pavlopoulos, Harris Papageorgiou, Ion Androutsopoulos and Suresh Manandhar. 2014. [SemEval-2014 Task 4: Aspect Based Sentiment Analysis](https://aclanthology.org/S14-2004/). In *Proceedings of the 8th International Workshop on Semantic Evaluation (SemEval 2014)*, pages 27–35, Dublin, Ireland. Association for Computational Linguistics. DOI: [10.3115/v1/S14-2004](https://doi.org/10.3115/v1/S14-2004).
 
 | | Count |
 |---|---:|
