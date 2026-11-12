@@ -268,7 +268,9 @@ flowchart LR
 - **Secrets:** the API token lives only in the notebook platform's secret store and in Streamlit Secrets; it is never printed or committed. `models/`, `*.safetensors`, `.env*` and `.streamlit/secrets.toml` are git-ignored.
 - **Operating constraint:** the backend runs only while the notebook session is alive, and a quick tunnel gets a **new URL on every start**, so `CFI_API_URL` must be updated after each restart.
 
-## Limitations
+## Limitations & Future Work
+
+### Limitations
 
 - **Single domain.** The model was trained and evaluated only on laptop reviews (the system prompt says so too). It accepts any text, but accuracy on other products or services has not been measured.
 - **Sentence-level training data.** SemEval reviews are mostly single sentences (median 83 characters), so long multi-paragraph reviews are out of distribution. The app limits input to 1,500 characters.
@@ -278,13 +280,16 @@ flowchart LR
 - **Ephemeral GPU backend.** Free notebook sessions stop when idle or after a time limit, and the quick-tunnel URL changes on every restart, so the live app is not always available.
 - **Not measured or not recorded:** GPU latency through the tunnel has not been measured. For the zero-shot baseline, only aspect F1 and joint aspect + sentiment F1 were recorded; its sentiment accuracy, sentiment macro F1, aspect precision and recall, and output diagnostics were not.
 
-## Future improvements
+### Future Improvements
 
 - Move the API to an always-on GPU host or a **named Cloudflare tunnel** for a stable URL.
 - Add **aspect-free and out-of-domain** examples (for example SemEval restaurants) to reduce invented aspects and test generalization.
 - Report **confidence intervals** (bootstrap) and per-label results, especially for `conflict`.
 - **Merge the LoRA adapter** and benchmark faster serving (batched requests, prompt-prefix caching, vLLM).
 - Publish a **model card** and the evaluation artifacts alongside the adapter.
+- **Measure GPU latency** through the tunnel and record the missing zero-shot baseline metrics, so both models are compared on the same full set of metrics.
+- Evaluate on **longer, multi-sentence reviews** before raising the 1,500-character input limit.
+- Explore **implicit-aspect extraction** using a dataset that annotates implicit aspects.
 
 ## Project structure
 
